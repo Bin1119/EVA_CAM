@@ -54,7 +54,7 @@ import sys
 # 查询目录地址
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 查询pyd地址
-py3_path = os.path.join(current_dir, "../../../../bin")
+py3_path = os.path.join(current_dir, "..\\bin")
 # 查询到AlpPython
 sys.path.append(py3_path)
 
@@ -243,7 +243,7 @@ def main():
 
     aps_mode = "NORMAL_V2"  # 存储 APS 数据模式
     evs_mode = "NORMAL_V2"  # 存储 EVS 数据模式
-    cfg = os.path.join(current_dir, "../../../../config/EVB/APX003CE_COB/003ce_hvs_master_bitformat_972fps_v6.0_new.data")  # 存储配置文件路径
+    cfg = os.path.join(current_dir, "..\\config\\APX003CE_COB\\003ce_hvs_master_bitformat_972fps_v6.0_new.data")  # 存储配置文件路径
 
     ##二.  初始化设备##
     recode = device.init(aps_mode, evs_mode, DeviceLinkType.MIDDLE)

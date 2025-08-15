@@ -54,7 +54,7 @@ import sys
 # 查询目录地址
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 查询pyd地址
-py3_path = os.path.join(current_dir, "../../../../bin")
+py3_path = os.path.join(current_dir, "..\\bin")
 # 查询到AlpPython
 sys.path.append(py3_path)
 
@@ -92,11 +92,11 @@ def chooseModel():
     strcmd = input("Please enter the command: ").strip().lower()
     
     if strcmd == "aps":
-        return "NORMAL_V2", "", os.path.join(current_dir, "../../../../config/EVB/APX003CE_COB/003ce_hvs_master_bitformat_972fps_v6.0_new.data")
+        return "NORMAL_V2", "", os.path.join(current_dir, "..\\config\\APX003CE_COB\\003ce_hvs_master_bitformat_972fps_v6.0_new.data")
     elif strcmd == "evs":
-        return "", "NORMAL_V2", os.path.join(current_dir, "../../../../config/EVB/APX003CE_COB/003ce_hvs_master_bitformat_972fps_v6.0_new.data")
+        return "", "NORMAL_V2", os.path.join(current_dir, "..\\config\\APX003CE_COB\\003ce_hvs_master_bitformat_972fps_v6.0_new.data")
     else:
-        return "NORMAL_V2", "NORMAL_V2", os.path.join(current_dir, "../../../../config/EVB/APX003CE_COB/003ce_hvs_master_bitformat_972fps_v6.0_new.data")
+        return "NORMAL_V2", "NORMAL_V2", os.path.join(current_dir, "..\\config\\APX003CE_COB\\003ce_hvs_master_bitformat_972fps_v6.0_new.data")
 
 
 def selectEVB(device):
@@ -323,7 +323,7 @@ def main():
 
     aps_mode = "NORMAL_V2"  # 存储 APS 数据模式
     evs_mode = "NORMAL_V2"  # 存储 EVS 数据模式
-    #cfg = os.path.join(current_dir, "../../../../config/EVB/APX003CE_COB/003ce_hvs_master_bitformat_972fps_v6.0_new.data")  # 存储配置文件路径
+    #cfg = os.path.join(current_dir, "..\\config\\APX003CE_COB\\003ce_hvs_master_bitformat_972fps_v6.0_new.data")  # 存储配置文件路径
 
     # 如果选择使用默认值就可以不调用这个函数
     # 调用 chooseModel 函数选择解码模式，根据用户输入配置 APS 模式和 EVS 模式。

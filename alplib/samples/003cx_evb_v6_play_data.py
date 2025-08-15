@@ -42,7 +42,7 @@ import sys
 # 查询目录地址
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # 查询pyd地址
-py3_path = os.path.join(current_dir, "../../../../bin")
+py3_path = os.path.join(current_dir, "..\\bin")
 # 查询到AlpPython
 sys.path.append(py3_path)
 
