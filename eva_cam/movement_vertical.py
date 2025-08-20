@@ -14,8 +14,12 @@ from eva_cam_controller import EvaCamController
 from utils import logger
 
 
-def vertical_movement_up_example():
-    """Example: Move robot 10cm up while collecting HVS data"""
+def vertical_movement_up_example(no_home=False):
+    """Example: Move robot 10cm up while collecting HVS data
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Vertical Movement Up Example ===")
     
@@ -24,7 +28,7 @@ def vertical_movement_up_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -79,8 +83,12 @@ def vertical_movement_up_example():
         controller.disconnect()
 
 
-def vertical_movement_down_example():
-    """Example: Move robot 10cm down while collecting HVS data"""
+def vertical_movement_down_example(no_home=False):
+    """Example: Move robot 10cm down while collecting HVS data
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Vertical Movement Down Example ===")
     
@@ -89,7 +97,7 @@ def vertical_movement_down_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -144,8 +152,12 @@ def vertical_movement_down_example():
         controller.disconnect()
 
 
-def vertical_movement_bidirectional_example():
-    """Example: Move robot 10cm up and down while collecting HVS data"""
+def vertical_movement_bidirectional_example(no_home=False):
+    """Example: Move robot 10cm up and down while collecting HVS data
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Bidirectional Vertical Movement Example ===")
     
@@ -154,7 +166,7 @@ def vertical_movement_bidirectional_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -219,8 +231,12 @@ def vertical_movement_bidirectional_example():
         controller.disconnect()
 
 
-def vertical_movement_zigzag_example():
-    """Example: Move robot in zigzag pattern vertically"""
+def vertical_movement_zigzag_example(no_home=False):
+    """Example: Move robot in zigzag pattern vertically
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Vertical Zigzag Movement Example ===")
     
@@ -229,7 +245,7 @@ def vertical_movement_zigzag_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -302,8 +318,12 @@ def vertical_movement_zigzag_example():
         controller.disconnect()
 
 
-def vertical_movement_with_rotation_example():
-    """Example: Move robot vertically while rotating"""
+def vertical_movement_with_rotation_example(no_home=False):
+    """Example: Move robot vertically while rotating
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Vertical Movement with Rotation Example ===")
     
@@ -312,7 +332,7 @@ def vertical_movement_with_rotation_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         

@@ -18,6 +18,11 @@ from datetime import datetime
 from utils import setup_paths, logger, config, DataSynchronizer, MotionValidator, EmergencyHandler
 setup_paths()
 
+# Add AlpLib bin directory to path for AlpPython module
+import os
+alplib_bin_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'alplib', 'bin')
+sys.path.append(alplib_bin_path)
+
 try:
     from xarm.wrapper import XArmAPI
     from AlpPython import *
@@ -65,12 +70,17 @@ class EvaCamController:
         self.recording_config = self.config.get_recording_config()
         self.motion_config = self.config.get_motion_config()
         self.safety_config = self.config.get_safety_config()
+        self.init_config = self.config.get_init_config()
         
         self.logger.info("EVA_CAM Controller initialized")
     
-    def initialize_xarm(self) -> bool:
+    def initialize_xarm(self, go_home: bool = None) -> bool:
         """
         Initialize xArm robot connection
+        
+        Args:
+            go_home: Whether to go to home position after initialization. 
+                    If None, uses configuration file setting.
         
         Returns:
             True if successful, False otherwise
@@ -88,8 +98,16 @@ class EvaCamController:
             if self.safety_config['enable_collision_detection']:
                 self.arm.set_collision_sensitivity(self.safety_config['collision_sensitivity'])
             
-            # Go to home position
-            self.arm.move_gohome(wait=True)
+            # Determine whether to go home
+            if go_home is None:
+                go_home = self.init_config['go_home_on_init']
+            
+            # Go to home position if configured
+            if go_home:
+                self.logger.info("Moving to home position")
+                self.arm.move_gohome(wait=True)
+            else:
+                self.logger.info("Skipping home position, staying at current position")
             
             self.logger.info("xArm initialized successfully")
             return True
@@ -110,7 +128,7 @@ class EvaCamController:
             
             # Get configuration file path
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            cfg_path = os.path.join(current_dir, 'alplib', 'config', 
+            cfg_path = os.path.join(current_dir, '..', 'alplib', 'config', 
                                    'APX003CE_COB', '003ce_hvs_master_bitformat_972fps_v6.0_new.data')
             
             # Create camera instance
@@ -140,6 +158,9 @@ class EvaCamController:
             # Set camera parameters
             if not self._set_camera_parameters():
                 return False
+            
+            # Display camera information
+            self.display_camera_info()
             
             # Start data stream
             self.camera.startStream()
@@ -187,39 +208,86 @@ class EvaCamController:
             self.logger.error(f"Failed to select EVB device: {e}")
             return False
     
-    def _set_camera_parameters(self) -> bool:
-        """Set camera parameters"""
+    def display_camera_info(self):
+        """Display camera sensor information - based on AlpLib sample code"""
         try:
-            # Set APS parameters
+            if not self.camera:
+                self.logger.error("Camera not initialized")
+                return
+            
+            self.logger.info("=== Camera Sensor Information ===")
+            
+            # Basic device information
+            self.logger.info(f"Config version: {self.camera.getConfigVersion()}")
+            self.logger.info(f"Firmware version: {self.camera.getFirmwareVersion()}")
+            self.logger.info(f"FPGA version: {self.camera.getFpgaVersion()}")
+            
+            # APS parameters
             if self.camera.apsModeIndex() > -1:
-                # Set analog gain
-                rel = self.camera.setApsAnalogGain(self.camera_config['aps_analog_gain'])
+                self.logger.info("--- APS Parameters ---")
+                self.logger.info(f"APS exposure time: {self.camera.apsExposureTime()} us")
+                self.logger.info(f"APS FPS: {self.camera.apsFps()}")
+                self.logger.info(f"APS analog gain: {self.camera.apsAnalogGain()}")
+                self.logger.info(f"APS mode: {self.camera.apsModeString()}")
+                self.logger.info(f"APS resolution: {self.camera.apsWidth()}x{self.camera.apsHeight()}")
+            
+            # EVS parameters
+            if self.camera.evsModeIndex() > -1:
+                self.logger.info("--- EVS Parameters ---")
+                self.logger.info(f"EVS FPS: {self.camera.evsFps()}")
+                self.logger.info(f"EVS sensitivity: {self.camera.evsSensitivity()}")
+                self.logger.info(f"EVS mode: {self.camera.evsModeString()}")
+                self.logger.info(f"EVS resolution: {self.camera.evsWidth()}x{self.camera.evsHeight()}")
+            
+            self.logger.info("=== Camera Information End ===")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to display camera info: {e}")
+    
+    def _set_camera_parameters(self) -> bool:
+        """Set camera parameters - based on AlpLib sample code"""
+        try:
+            self.logger.info("Setting camera parameters based on AlpLib recommendations")
+            
+            # Set APS parameters (based on AlpLib sample: gain=1, fps=15, exposure=25000us)
+            if self.camera.apsModeIndex() > -1:
+                # Set analog gain (AlpLib sample uses 1)
+                aps_gain = self.camera_config.get('aps_analog_gain', 1)
+                rel = self.camera.setApsAnalogGain(aps_gain)
                 if rel == -1:
                     self.logger.error("Failed to set APS analog gain")
                     return False
                 
-                # Set FPS
-                if not self.camera.setApsFps(self.camera_config['aps_fps']):
+                # Set FPS (AlpLib sample uses 15, but use config if available)
+                aps_fps = self.camera_config.get('aps_fps', 15)
+                if not self.camera.setApsFps(aps_fps):
                     self.logger.error("Failed to set APS FPS")
                     return False
                 
-                # Set exposure time
-                rel = self.camera.setApsExposureTime(self.camera_config['aps_exposure_time'])
+                # Set exposure time in microseconds (AlpLib sample uses 25000us)
+                aps_exposure = self.camera_config.get('aps_exposure_time', 25000)
+                rel = self.camera.setApsExposureTime(aps_exposure)
                 if rel == -1:
                     self.logger.error("Failed to set APS exposure time")
                     return False
+                
+                self.logger.info(f"APS parameters set: gain={aps_gain}, fps={aps_fps}, exposure={aps_exposure}us")
             
-            # Set EVS parameters
+            # Set EVS parameters (based on AlpLib sample: fps=500, sensitivity=4)
             if self.camera.evsModeIndex() > -1:
-                # Set FPS
-                if not self.camera.setEvsFps(self.camera_config['evs_fps']):
+                # Set FPS (AlpLib sample uses 500)
+                evs_fps = self.camera_config.get('evs_fps', 500)
+                if not self.camera.setEvsFps(evs_fps):
                     self.logger.error("Failed to set EVS FPS")
                     return False
                 
-                # Set sensitivity
-                if not self.camera.setEvsSensitivity(self.camera_config['evs_sensitivity']):
+                # Set sensitivity (AlpLib sample uses 4)
+                evs_sensitivity = self.camera_config.get('evs_sensitivity', 4)
+                if not self.camera.setEvsSensitivity(evs_sensitivity):
                     self.logger.error("Failed to set EVS sensitivity")
                     return False
+                
+                self.logger.info(f"EVS parameters set: fps={evs_fps}, sensitivity={evs_sensitivity}")
             
             self.logger.info("Camera parameters set successfully")
             return True
@@ -299,35 +367,49 @@ class EvaCamController:
             return False
     
     def _init_recording(self) -> bool:
-        """Initialize recording"""
+        """Initialize recording - based on AlpLib sample code"""
         try:
             if not self.writer_file:
                 self.logger.error("Writer file not initialized")
                 return False
             
-            # Determine file format and extension
-            if self.recording_config['format'] == 'bin':
-                file_name = os.path.join(self.current_output_dir, "data")
-                writer_type = WriterType.BIN
-            else:
-                file_name = os.path.join(self.current_output_dir, "data.alpdata")
-                writer_type = WriterType.HDF5
+            # Get current timestamp (similar to AlpLib sample's getCurrentTime)
+            current_time = self._get_timestamp()
             
-            # Get device attributes
+            # Determine file format and extension based on AlpLib sample
+            recording_format = self.recording_config.get('format', 'hdf5')
+            if recording_format.lower() == 'bin':
+                # BIN format: create directory structure
+                bin_dir = os.path.join(self.current_output_dir, f"data_{current_time}")
+                os.makedirs(bin_dir, exist_ok=True)
+                file_name = bin_dir
+                writer_type = WriterType.BIN
+                self.logger.info(f"Recording in BIN format to: {bin_dir}")
+            else:
+                # HDF5 format: single file
+                file_name = os.path.join(self.current_output_dir, f"data_{current_time}.alpdata")
+                writer_type = WriterType.HDF5
+                self.logger.info(f"Recording in HDF5 format to: {file_name}")
+            
+            # Get device attributes (based on AlpLib sample)
             device_attribute = self.camera.getDeviceAttribute(writer_type, file_name)
             aps_ptr = None
             evs_ptr = None
             
             if self.camera.apsModeIndex() > -1:
                 aps_ptr = self.camera.getApsAttribute()
+                self.logger.info("APS attribute initialized for recording")
             
             if self.camera.evsModeIndex() > -1:
                 evs_ptr = self.camera.getEvsAttribute()
+                self.logger.info("EVS attribute initialized for recording")
             
-            # Open file
+            # Open file for writing (based on AlpLib sample)
             error = self.writer_file.open(device_attribute, aps_ptr, evs_ptr)
             if error != AlpSaveFileError.NONE:
                 self.logger.error(f"Failed to open recording file: {error}")
+                # Clean up on error
+                self.writer_file.close()
                 return False
             
             self.logger.info("Recording initialized successfully")
@@ -367,11 +449,21 @@ class EvaCamController:
             self.evs_thread.join(timeout=1.0)
     
     def _aps_data_thread(self):
-        """APS data collection thread"""
+        """APS data collection thread - based on AlpLib sample code"""
         try:
-            cv.namedWindow("APS", cv.WINDOW_NORMAL)
+            # Only create window if APS mode is enabled
+            if self.camera.apsModeIndex() > -1:
+                cv.namedWindow("APS", cv.WINDOW_NORMAL)
+                
+                # Display APS parameter information
+                self.logger.info(f"APS Mode: {self.camera.apsModeString()}")
+                self.logger.info(f"APS Resolution: {self.camera.apsWidth()}x{self.camera.apsHeight()}")
+                self.logger.info(f"APS FPS: {self.camera.apsFps()}")
+                self.logger.info(f"APS Exposure: {self.camera.apsExposureTime()}us")
+                self.logger.info(f"APS Gain: {self.camera.apsAnalogGain()}")
             
             while self.camera_threads_running and self.camera.isOpened():
+                # Get APS data based on AlpLib sample code
                 frames = self.camera.getApsFrames()
                 
                 # Save data if collecting
@@ -379,24 +471,51 @@ class EvaCamController:
                     for frame in frames:
                         self.writer_file.write(frame)
                 
-                # Display frames
-                for frame in frames:
-                    aps_image = frame.convertTo()
-                    cv.imshow("APS", aps_image)
-                    cv.waitKey(1)
-                    break
+                # Display frames based on AlpLib sample code
+                if frames and self.camera.apsModeIndex() > -1:
+                    for frame in frames:
+                        # Convert to OpenCV Mat format
+                        aps_image = frame.convertTo()
+                        
+                        # Add collection status and timestamp
+                        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        status_text = "RECORDING" if self.is_collecting else "MONITOR"
+                        cv.putText(aps_image, f"APS - {status_text} - {timestamp}", 
+                                  (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if self.is_collecting else (255, 255, 255), 2)
+                        
+                        # Display FPS info
+                        fps_text = f"FPS: {self.camera.apsFps()}"
+                        cv.putText(aps_image, fps_text, (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv.imshow("APS", aps_image)
+                        cv.waitKey(1)
+                        break  # Only process first frame
+                
+                # Control processing frequency
+                time.sleep(0.001)  # 1ms interval
             
-            cv.destroyWindow("APS")
+            # Clean up window
+            if self.camera.apsModeIndex() > -1:
+                cv.destroyWindow("APS")
             
         except Exception as e:
             self.logger.error(f"APS data thread error: {e}")
     
     def _evs_data_thread(self):
-        """EVS data collection thread"""
+        """EVS data collection thread - based on AlpLib sample code"""
         try:
-            cv.namedWindow("EVS", cv.WINDOW_NORMAL)
+            # Only create window if EVS mode is enabled
+            if self.camera.evsModeIndex() > -1:
+                cv.namedWindow("EVS", cv.WINDOW_NORMAL)
+                
+                # Display EVS parameter information
+                self.logger.info(f"EVS Mode: {self.camera.evsModeString()}")
+                self.logger.info(f"EVS Resolution: {self.camera.evsWidth()}x{self.camera.evsHeight()}")
+                self.logger.info(f"EVS FPS: {self.camera.evsFps()}")
+                self.logger.info(f"EVS Sensitivity: {self.camera.evsSensitivity()}")
             
             while self.camera_threads_running and self.camera.isOpened():
+                # Get EVS data based on AlpLib sample code
                 frames = self.camera.getEvsFrames()
                 
                 # Save data if collecting
@@ -404,14 +523,32 @@ class EvaCamController:
                     for frame in frames:
                         self.writer_file.write(frame)
                 
-                # Display frames
-                for frame in frames:
-                    evs_image = frame.frame()
-                    cv.imshow("EVS", evs_image * 100)
-                    cv.waitKey(1)
-                    break
+                # Display frames based on AlpLib sample code
+                if frames and self.camera.evsModeIndex() > -1:
+                    for frame in frames:
+                        # Convert to OpenCV format (based on AlpLib sample: evs_image * 100)
+                        evs_image = frame.frame() * 100
+                        
+                        # Add collection status and timestamp
+                        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        status_text = "RECORDING" if self.is_collecting else "MONITOR"
+                        cv.putText(evs_image, f"EVS - {status_text} - {timestamp}", 
+                                  (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if self.is_collecting else (255, 255, 255), 2)
+                        
+                        # Display FPS info
+                        fps_text = f"FPS: {self.camera.evsFps()}"
+                        cv.putText(evs_image, fps_text, (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv.imshow("EVS", evs_image)
+                        cv.waitKey(1)
+                        break  # Only process first frame
+                
+                # Control processing frequency
+                time.sleep(0.001)  # 1ms interval
             
-            cv.destroyWindow("EVS")
+            # Clean up window
+            if self.camera.evsModeIndex() > -1:
+                cv.destroyWindow("EVS")
             
         except Exception as e:
             self.logger.error(f"EVS data thread error: {e}")

@@ -106,11 +106,12 @@ def evsFrameCallback(player):
     cv.destroyWindow("EVS")
 
 
-def syncFrameCallback(player):
+def syncFrameCallback(player, video_writer=None):
     """
     该函数用于处理从设备接收到同步数据帧
 
     :param device: 设备实例
+    :param video_writer: OpenCV VideoWriter对象用于保存视频
     """
     cv.namedWindow("Sync", cv.WINDOW_NORMAL)
 
@@ -129,6 +130,11 @@ def syncFrameCallback(player):
                 aps_image_resized = cv.resize(aps_image, (evs_image.shape[1], evs_image.shape[0]), interpolation=cv.INTER_LINEAR)
                 result = cv.hconcat([aps_image_resized, evs_image * 100])
                 cv.imshow("Sync", result)
+                
+                # 保存视频帧
+                if video_writer is not None:
+                    video_writer.write(result)
+                
                 cv.waitKey(1)
                 time.sleep(1 / 30)
 
@@ -198,12 +204,13 @@ def configurePlayBinData(path):
     return play_bin_atrr
 
 
-def loadData(player,path):
+def loadData(player,path, model=3):
     """
     加载保存的 bin 和 hdf5 数据
 
     :param player: 播放器实例
     :param path: 播放文件路径
+    :param model: 数据模式 (1=APS, 2=EVS, 3=HVS/同步)
     """
 
     if ".bin" in path:
@@ -216,19 +223,20 @@ def loadData(player,path):
             ##二.  初始化播放器##
             return player.init(None, player_evs_attr), 2
 
-    print("Please choose the data type to load")
-    print("Enter 'APS' for APS")
-    print("Enter 'EVS' for EVS")
-    print("Enter 'HVS' or any key for both")
-    print("Please enter the command: ")
-    user_input = input()
-    model = 0
-    if user_input.lower() == 'aps':
-        model = 1
-    elif user_input.lower() == 'evs':
-        model = 2
-    else:
-        model = 3
+    # 只有在没有指定model时才询问用户
+    if model == 0:
+        print("Please choose the data type to load")
+        print("Enter 'APS' for APS")
+        print("Enter 'EVS' for EVS")
+        print("Enter 'HVS' or any key for both")
+        print("Please enter the command: ")
+        user_input = input()
+        if user_input.lower() == 'aps':
+            model = 1
+        elif user_input.lower() == 'evs':
+            model = 2
+        else:
+            model = 3
 
     if ".alpdata" in path:
         ##二.  初始化播放器##
@@ -265,8 +273,22 @@ def main():
     print("Input playback files use absolute paths (*.alpdata or *.ApsEvsInfo.txt or *.bin):")
     play_name = input()
 
+    print("Please choose the data type to load")
+    print("Enter 'APS' for APS")
+    print("Enter 'EVS' for EVS")
+    print("Enter 'HVS' or any key for both")
+    print("Please enter the command: ")
+    user_input = input()
+    model = 0
+    if user_input.lower() == 'aps':
+        model = 1
+    elif user_input.lower() == 'evs':
+        model = 2
+    else:
+        model = 3
+
     ##二.  初始化播放器##
-    success, model = loadData(player,str(play_name))
+    success, model = loadData(player,str(play_name), model)
 
     if not success:
         print("Failed to load data. Exiting...")
@@ -280,9 +302,100 @@ def main():
     else:
         callback_func = syncFrameCallback
 
-    # 创建并启动线程
-    t = threading.Thread(target = callback_func, args=(player,))
-    t.start()
+    # 创建视频写入器（仅在同步模式下）
+    video_writer_ref = [None]
+    if model == 3:
+        # 生成输出视频路径（与输入文件同目录）
+        input_path = os.path.dirname(play_name)
+        input_filename = os.path.splitext(os.path.basename(play_name))[0]
+        output_video_path = os.path.join(input_path, f"{input_filename}_sync.avi")
+        
+        # 设置视频编码器和参数
+        # 使用更通用的编码器
+        fourcc = cv.VideoWriter_fourcc(*'XVID')
+        fps = 30
+        print(f"Video codec: XVID, FPS: {fps}")
+        # 创建一个标志来指示是否需要初始化VideoWriter
+        video_writer_initialized = [False]
+        
+        # 修改syncFrameCallback函数以支持延迟初始化
+        def syncFrameCallbackWithInit(player, video_writer_ref, initialized_ref):
+            """
+            包装函数，支持延迟初始化VideoWriter
+            """
+            cv.namedWindow("Sync", cv.WINDOW_NORMAL)
+            
+            while player.isWorking():
+                sync_list = player.getSyncFrames()
+                
+                for it in sync_list:
+                    aps_image = it[0].convertTo()
+                    if len(it[1]) == 0:
+                        continue
+                    for evs in it[1]:
+                        evs_image = evs.frame()
+                        aps_image_resized = cv.resize(aps_image, (evs_image.shape[1], evs_image.shape[0]), interpolation=cv.INTER_LINEAR)
+                        result = cv.hconcat([aps_image_resized, evs_image * 100])
+                        cv.imshow("Sync", result)
+                        
+                        # 延迟初始化VideoWriter
+                        if not initialized_ref[0] and video_writer_ref[0] is None:
+                            frame_size = (result.shape[1], result.shape[0])
+                            print(f"Frame size: {frame_size}, Result shape: {result.shape}, Result dtype: {result.dtype}")
+                            
+                            video_writer_ref[0] = cv.VideoWriter(output_video_path, fourcc, fps, frame_size)
+                            initialized_ref[0] = True
+                            print(f"Saving synchronized video to: {output_video_path}")
+                            print(f"VideoWriter opened: {video_writer_ref[0].isOpened()}")
+                        
+                        # 保存视频帧
+                        if initialized_ref[0] and video_writer_ref[0] is not None:
+                            if video_writer_ref[0].isOpened():
+                                # 创建要写入的帧的副本，避免修改原始显示帧
+                                write_frame = result.copy()
+                                
+                                # 确保图像是3通道BGR格式
+                                if len(write_frame.shape) == 2:
+                                    write_frame = cv.cvtColor(write_frame, cv.COLOR_GRAY2BGR)
+                                elif write_frame.shape[2] == 4:
+                                    write_frame = cv.cvtColor(write_frame, cv.COLOR_BGRA2BGR)
+                                
+                                # 确保图像数据类型正确
+                                if write_frame.dtype != np.uint8:
+                                    write_frame = write_frame.astype(np.uint8)
+                                
+                                video_writer_ref[0].write(write_frame)
+                                
+                                # 添加帧计数器
+                                if not hasattr(syncFrameCallbackWithInit, 'frame_count'):
+                                    syncFrameCallbackWithInit.frame_count = 0
+                                syncFrameCallbackWithInit.frame_count += 1
+                                if syncFrameCallbackWithInit.frame_count % 30 == 0:  # 每30帧打印一次
+                                    print(f"Written {syncFrameCallbackWithInit.frame_count} frames")
+                            else:
+                                print("Warning: VideoWriter is not opened properly")
+                        
+                        cv.waitKey(1)
+                        time.sleep(1 / 30)
+            
+            cv.destroyWindow("Sync")
+            
+            # 打印总帧数
+            if hasattr(syncFrameCallbackWithInit, 'frame_count'):
+                print(f"Total frames written: {syncFrameCallbackWithInit.frame_count}")
+        
+        # 使用包装函数
+        callback_func = lambda player: syncFrameCallbackWithInit(player, video_writer_ref, video_writer_initialized)
+        
+        # 创建并启动线程
+        t = threading.Thread(target=callback_func, args=(player,))
+        t.start()
+    else:
+        # 创建并启动线程（非同步模式）
+        t = threading.Thread(target=callback_func, args=(player,))
+        t.start()
+
+    # 线程已经在上面创建了，这里不需要重复创建
 
     ##四.  加载数据##
     if not player.load():
@@ -302,6 +415,20 @@ def main():
     player.close()
 
     t.join()
+    
+    # 释放视频写入器（仅在同步模式下）
+    if model == 3 and video_writer_ref[0] is not None:
+        if video_writer_ref[0].isOpened():
+            video_writer_ref[0].release()
+            print("Video saved successfully!")
+            # 检查文件是否成功创建
+            if os.path.exists(output_video_path):
+                file_size = os.path.getsize(output_video_path)
+                print(f"Video file size: {file_size} bytes")
+            else:
+                print("Warning: Video file was not created")
+        else:
+            print("Warning: VideoWriter was not properly opened")
 
     
 if __name__ == "__main__":

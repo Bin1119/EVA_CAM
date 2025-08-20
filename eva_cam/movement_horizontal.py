@@ -14,7 +14,7 @@ from eva_cam_controller import EvaCamController
 from utils import logger
 
 
-def horizontal_movement_example():
+def horizontal_movement_example(no_home=False):
     """Example: Move robot 10cm horizontally while collecting HVS data"""
     
     logger.info("=== Horizontal Movement Example ===")
@@ -24,7 +24,7 @@ def horizontal_movement_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -79,7 +79,7 @@ def horizontal_movement_example():
         controller.disconnect()
 
 
-def horizontal_movement_bidirectional_example():
+def horizontal_movement_bidirectional_example(no_home=False):
     """Example: Move robot 10cm forward and backward while collecting HVS data"""
     
     logger.info("=== Bidirectional Horizontal Movement Example ===")
@@ -89,7 +89,7 @@ def horizontal_movement_bidirectional_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -155,7 +155,7 @@ def horizontal_movement_bidirectional_example():
         controller.disconnect()
 
 
-def horizontal_movement_y_direction_example():
+def horizontal_movement_y_direction_example(no_home=False):
     """Example: Move robot 10cm in Y direction while collecting HVS data"""
     
     logger.info("=== Y Direction Horizontal Movement Example ===")
@@ -165,7 +165,7 @@ def horizontal_movement_y_direction_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         

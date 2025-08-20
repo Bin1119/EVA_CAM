@@ -15,8 +15,12 @@ from eva_cam_controller import EvaCamController
 from utils import logger
 
 
-def rotation_yaw_example():
-    """Example: Rotate robot 30 degrees around yaw axis while collecting HVS data"""
+def rotation_yaw_example(no_home=False):
+    """Example: Rotate robot 30 degrees around yaw axis while collecting HVS data
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Yaw Rotation Example ===")
     
@@ -25,7 +29,7 @@ def rotation_yaw_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -80,8 +84,12 @@ def rotation_yaw_example():
         controller.disconnect()
 
 
-def rotation_bidirectional_example():
-    """Example: Rotate robot 30 degrees clockwise and counter-clockwise"""
+def rotation_bidirectional_example(no_home=False):
+    """Example: Rotate robot 30 degrees clockwise and counter-clockwise
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Bidirectional Rotation Example ===")
     
@@ -90,7 +98,7 @@ def rotation_bidirectional_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -155,8 +163,12 @@ def rotation_bidirectional_example():
         controller.disconnect()
 
 
-def rotation_roll_example():
-    """Example: Rotate robot 30 degrees around roll axis"""
+def rotation_roll_example(no_home=False):
+    """Example: Rotate robot 30 degrees around roll axis
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Roll Rotation Example ===")
     
@@ -165,7 +177,7 @@ def rotation_roll_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -220,8 +232,12 @@ def rotation_roll_example():
         controller.disconnect()
 
 
-def rotation_pitch_example():
-    """Example: Rotate robot 30 degrees around pitch axis"""
+def rotation_pitch_example(no_home=False):
+    """Example: Rotate robot 30 degrees around pitch axis
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Pitch Rotation Example ===")
     
@@ -230,7 +246,7 @@ def rotation_pitch_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         
@@ -285,8 +301,12 @@ def rotation_pitch_example():
         controller.disconnect()
 
 
-def rotation_combined_example():
-    """Example: Combined rotation around multiple axes"""
+def rotation_combined_example(no_home=False):
+    """Example: Combined rotation around multiple axes
+    
+    Args:
+        no_home: If True, skip going to home position during initialization
+    """
     
     logger.info("=== Combined Rotation Example ===")
     
@@ -295,7 +315,7 @@ def rotation_combined_example():
     
     try:
         # Initialize systems
-        if not controller.initialize_xarm():
+        if not controller.initialize_xarm(go_home=not no_home):
             logger.error("Failed to initialize xArm")
             return False
         

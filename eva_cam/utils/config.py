@@ -97,6 +97,12 @@ class ConfigManager:
             'enable_collision_detection': self.getboolean('SAFETY', 'enable_collision_detection', fallback=True),
             'emergency_stop_enabled': self.getboolean('SAFETY', 'emergency_stop_enabled', fallback=True)
         }
+    
+    def get_init_config(self) -> Dict[str, Any]:
+        """Get initialization configuration"""
+        return {
+            'go_home_on_init': self.getboolean('INITIALIZATION', 'go_home_on_init', fallback=True)
+        }
 
 
 # Global configuration instance
