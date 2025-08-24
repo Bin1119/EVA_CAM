@@ -48,8 +48,13 @@ class TrajectoryControlSystem:
         self.display_running = False
         self.is_collecting_data = False
         self.data_collection_active = False
+        self.motion_start_time = None
+        self.motion_duration = None
         self.default_distance = self._get_default_distance()
         self.default_rotation_angle = self._get_default_rotation_angle()
+        self.default_duration = self._get_default_duration()
+        self.timed_linear_speed = self._get_timed_linear_speed()
+        self.timed_rotation_speed = self._get_timed_rotation_speed()
         self.linear_speed = self._get_linear_speed()
         self.vertical_speed = self._get_vertical_speed()
         self.rotation_speed = self._get_rotation_speed()
@@ -89,6 +94,27 @@ class TrajectoryControlSystem:
             return int(self.controller.config.get('MOTION', 'rotation_speed', fallback=100))
         except:
             return 100
+    
+    def _get_default_duration(self) -> int:
+        """从配置文件获取默认运动时长"""
+        try:
+            return int(self.controller.config.get('MOTION', 'default_duration_ms', fallback=1000))
+        except:
+            return 1000
+    
+    def _get_timed_linear_speed(self) -> int:
+        """从配置文件获取定时线性移动速度"""
+        try:
+            return int(self.controller.config.get('MOTION', 'timed_linear_speed', fallback=20))
+        except:
+            return 20
+    
+    def _get_timed_rotation_speed(self) -> int:
+        """从配置文件获取定时旋转速度"""
+        try:
+            return int(self.controller.config.get('MOTION', 'timed_rotation_speed', fallback=20))
+        except:
+            return 20
     
     def _start_motion_data_collection(self) -> bool:
         """在运动开始前启动数据采集"""
@@ -237,9 +263,58 @@ class TrajectoryControlSystem:
             },
             '9': {
                 'name': '回到初始位置',
-                'description': '机械臂回到系统启动时的初始位置',
+                'description': '机械臂回到系统启动时的初始位置（不保存数据）',
                 'motion_func': self._move_to_initial_position,
                 'params': {}
+            },
+            # 基于时长的运动轨迹
+            'a': {
+                'name': f'X+方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿X+方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_horizontal_right_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'b': {
+                'name': f'X-方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿X-方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_horizontal_left_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'c': {
+                'name': f'Z+方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿Z+方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_vertical_up_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'd': {
+                'name': f'Z-方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿Z-方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_vertical_down_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'e': {
+                'name': f'Y+方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿Y+方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_y_positive_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'f': {
+                'name': f'Y-方向运动{self.default_duration}毫秒',
+                'description': f'机械臂沿Y-方向运动{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._move_y_negative_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'g': {
+                'name': f'逆时针旋转{self.default_duration}毫秒',
+                'description': f'机械臂水平逆时针旋转{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._rotate_counter_clockwise_timed,
+                'params': {'duration_ms': self.default_duration}
+            },
+            'h': {
+                'name': f'顺时针旋转{self.default_duration}毫秒',
+                'description': f'机械臂水平顺时针旋转{self.default_duration}毫秒（基于时长）',
+                'motion_func': self._rotate_clockwise_timed,
+                'params': {'duration_ms': self.default_duration}
             }
         }
     
@@ -852,13 +927,13 @@ class TrajectoryControlSystem:
         
         while True:
             try:
-                choice = input("请选择运动轨迹 (1-9): ").strip()
+                choice = input("请选择运动轨迹 (1-9, a-h): ").strip()
                 if choice.lower() == 'q':
                     return None
                 elif choice in self.trajectories:
                     return choice
                 else:
-                    print("无效选择，请输入 1-9 之间的数字或 q 退出")
+                    print("无效选择，请输入 1-9 或 a-h 之间的字母或 q 退出")
             except KeyboardInterrupt:
                 print("\n检测到中断信号")
                 return None
@@ -1170,40 +1245,60 @@ class TrajectoryControlSystem:
             # 记录起始位置
             start_position = self.current_position.copy() if self.current_position else None
             
-            # 记录轨迹信息到文件（在运动前准备好）
-            self._prepare_trajectory_info(trajectory)
-            
-            # 执行运动轨迹并在运动过程中同步采集数据
-            result = trajectory['motion_func'](**trajectory['params'])
-            
-            # 更新当前位置
-            self._update_current_position()
-            
-            # 停止数据采集并更新轨迹信息
-            self.stop_data_collection()
-            self._update_trajectory_completion_info(start_position)
-            
-            if result:
-                logger.info(f"轨迹执行完成: {trajectory['name']}")
-                print(f"\n✓ {trajectory['name']} 执行完成")
-                if hasattr(self.controller, 'current_output_dir') and self.controller.current_output_dir:
-                    print(f"  数据已保存到: {self.controller.current_output_dir}")
+            # 检查是否是回到初始位置选项（选项9）
+            if trajectory_key == '9':
+                # 对于回到初始位置选项，不进行数据采集
+                logger.info("回到初始位置选项，不进行数据采集")
+                result = trajectory['motion_func'](**trajectory['params'])
                 
-                if start_position and self.current_position:
-                    dx = self.current_position[0] - start_position[0]
-                    dy = self.current_position[1] - start_position[1]
-                    dz = self.current_position[2] - start_position[2]
-                    print(f"  位置变化: Δx={dx:.1f}mm, Δy={dy:.1f}mm, Δz={dz:.1f}mm")
+                # 更新当前位置
+                self._update_current_position()
                 
-                # 如果是回到初始位置，显示额外的信息
-                if trajectory_key == '9' and self.initial_position:
-                    print(f"  已回到初始位置: x={self.initial_position[0]:.1f}mm, y={self.initial_position[1]:.1f}mm, z={self.initial_position[2]:.1f}mm")
-                
-                return True
+                if result:
+                    logger.info(f"轨迹执行完成: {trajectory['name']}")
+                    print(f"\n✓ {trajectory['name']} 执行完成")
+                    print(f"  提示：此操作未保存数据")
+                    
+                    if self.initial_position:
+                        print(f"  已回到初始位置: x={self.initial_position[0]:.1f}mm, y={self.initial_position[1]:.1f}mm, z={self.initial_position[2]:.1f}mm")
+                    
+                    return True
+                else:
+                    logger.error(f"轨迹执行失败: {trajectory['name']}")
+                    print(f"\n✗ {trajectory['name']} 执行失败")
+                    return False
             else:
-                logger.error(f"轨迹执行失败: {trajectory['name']}")
-                print(f"\n✗ {trajectory['name']} 执行失败")
-                return False
+                # 对于其他选项，正常进行数据采集
+                # 记录轨迹信息到文件（在运动前准备好）
+                self._prepare_trajectory_info(trajectory)
+                
+                # 执行运动轨迹并在运动过程中同步采集数据
+                result = trajectory['motion_func'](**trajectory['params'])
+                
+                # 更新当前位置
+                self._update_current_position()
+                
+                # 停止数据采集并更新轨迹信息
+                self.stop_data_collection()
+                self._update_trajectory_completion_info(start_position)
+                
+                if result:
+                    logger.info(f"轨迹执行完成: {trajectory['name']}")
+                    print(f"\n✓ {trajectory['name']} 执行完成")
+                    if hasattr(self.controller, 'current_output_dir') and self.controller.current_output_dir:
+                        print(f"  数据已保存到: {self.controller.current_output_dir}")
+                    
+                    if start_position and self.current_position:
+                        dx = self.current_position[0] - start_position[0]
+                        dy = self.current_position[1] - start_position[1]
+                        dz = self.current_position[2] - start_position[2]
+                        print(f"  位置变化: Δx={dx:.1f}mm, Δy={dy:.1f}mm, Δz={dz:.1f}mm")
+                    
+                    return True
+                else:
+                    logger.error(f"轨迹执行失败: {trajectory['name']}")
+                    print(f"\n✗ {trajectory['name']} 执行失败")
+                    return False
                 
         except Exception as e:
             logger.error(f"执行轨迹时发生错误: {e}")
@@ -1434,11 +1529,7 @@ class TrajectoryControlSystem:
             
             logger.info(f"目标初始位置: x={self.initial_position[0]:.2f}, y={self.initial_position[1]:.2f}, z={self.initial_position[2]:.2f}")
             
-            # 开始同步数据采集
-            if not self._start_motion_data_collection():
-                logger.warning("数据采集启动失败，继续执行运动")
-            
-            # 移动到初始位置
+            # 直接移动到初始位置，不进行数据采集
             result = self.controller.move_linear(
                 x=self.initial_position[0],
                 y=self.initial_position[1],
@@ -1449,9 +1540,6 @@ class TrajectoryControlSystem:
                 speed=self.linear_speed
             )
             
-            # 运动完成后停止数据采集
-            self._stop_motion_data_collection()
-            
             if result:
                 logger.info("已成功回到初始位置")
                 return True
@@ -1461,9 +1549,276 @@ class TrajectoryControlSystem:
                 
         except Exception as e:
             logger.error(f"回到初始位置失败: {e}")
-            # 异常情况下也要停止数据采集
-            self._stop_motion_data_collection()
             return False
+    
+    # 基于时长的运动方法
+    def _move_horizontal_right_timed(self, duration_ms: int) -> bool:
+        """基于时长的水平向右运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0  # 转换为秒
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0] + distance_mm
+        target_y = self.current_position[1]
+        target_z = self.current_position[2]
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)  # 额外2秒超时
+        
+        return True
+    
+    def _move_horizontal_left_timed(self, duration_ms: int) -> bool:
+        """基于时长的水平向左运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0] - distance_mm
+        target_y = self.current_position[1]
+        target_z = self.current_position[2]
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _move_vertical_up_timed(self, duration_ms: int) -> bool:
+        """基于时长的垂直向上运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0]
+        target_y = self.current_position[1]
+        target_z = self.current_position[2] + distance_mm
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _move_vertical_down_timed(self, duration_ms: int) -> bool:
+        """基于时长的垂直向下运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0]
+        target_y = self.current_position[1]
+        target_z = self.current_position[2] - distance_mm
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _move_y_positive_timed(self, duration_ms: int) -> bool:
+        """基于时长的Y+方向运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0]
+        target_y = self.current_position[1] + distance_mm
+        target_z = self.current_position[2]
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _move_y_negative_timed(self, duration_ms: int) -> bool:
+        """基于时长的Y-方向运动"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行运动")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算运动距离 (速度 * 时间)
+        distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+        target_x = self.current_position[0]
+        target_y = self.current_position[1] - distance_mm
+        target_z = self.current_position[2]
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _rotate_counter_clockwise_timed(self, duration_ms: int) -> bool:
+        """基于时长的逆时针旋转"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行旋转")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算旋转角度 (角速度 * 时间)
+        angle_degrees = self.timed_rotation_speed * (duration_ms / 1000.0)
+        target_yaw = self.current_position[5] + angle_degrees
+        
+        # 处理可能的inf值
+        roll = self.current_position[3] if not np.isinf(self.current_position[3]) else 0
+        pitch = self.current_position[4] if not np.isinf(self.current_position[4]) else 0
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': self.current_position[0], 'y': self.current_position[1], 'z': self.current_position[2],
+                   'roll': roll, 'pitch': pitch, 'yaw': target_yaw, 'speed': self.timed_rotation_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _rotate_clockwise_timed(self, duration_ms: int) -> bool:
+        """基于时长的顺时针旋转"""
+        if not self.current_position:
+            logger.error("当前位置未知，无法执行旋转")
+            return False
+        
+        # 记录运动开始时间
+        self.motion_start_time = time.time()
+        self.motion_duration = duration_ms / 1000.0
+        
+        # 计算旋转角度 (角速度 * 时间)
+        angle_degrees = self.timed_rotation_speed * (duration_ms / 1000.0)
+        target_yaw = self.current_position[5] - angle_degrees
+        
+        # 处理可能的inf值
+        roll = self.current_position[3] if not np.isinf(self.current_position[3]) else 0
+        pitch = self.current_position[4] if not np.isinf(self.current_position[4]) else 0
+        
+        # 在运动开始的同时启动数据采集
+        motion_thread = threading.Thread(
+            target=self._execute_timed_motion_with_sync_collection,
+            args=(self.controller.move_linear, 
+                  {'x': self.current_position[0], 'y': self.current_position[1], 'z': self.current_position[2],
+                   'roll': roll, 'pitch': pitch, 'yaw': target_yaw, 'speed': self.timed_rotation_speed})
+        )
+        motion_thread.daemon = True
+        motion_thread.start()
+        
+        # 等待运动完成
+        motion_thread.join(timeout=self.motion_duration + 2.0)
+        
+        return True
+    
+    def _execute_timed_motion_with_sync_collection(self, motion_func: Callable, motion_params: Dict[str, Any]):
+        """执行运动并同步进行数据采集"""
+        try:
+            # 立即启动数据采集（与运动开始同步）
+            self._start_motion_data_collection()
+            
+            # 执行运动
+            result = motion_func(**motion_params)
+            
+            # 等待预设的时长
+            time.sleep(max(0, self.motion_duration - (time.time() - self.motion_start_time)))
+            
+            # 停止数据采集
+            self._stop_motion_data_collection()
+            
+            logger.info(f"基于时长的运动完成，持续时间: {self.motion_duration:.2f}秒")
+            
+        except Exception as e:
+            logger.error(f"执行基于时长的运动时发生错误: {e}")
+            # 确保停止数据采集
+            self._stop_motion_data_collection()
     
     def run(self):
         """运行运动轨迹控制系统"""
@@ -1490,6 +1845,8 @@ class TrajectoryControlSystem:
             print("• 数据保存格式由settings.conf配置决定")
             print(f"• 默认移动距离: {self.default_distance}毫米")
             print(f"• 默认旋转角度: {self.default_rotation_angle}度")
+            print(f"• 默认运动时长: {self.default_duration}毫秒")
+            print("• 基于时长的运动轨迹选项: a-h (精确控制运动时间)")
             print()
             
             self.is_running = True
