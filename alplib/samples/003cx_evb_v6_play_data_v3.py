@@ -1,4 +1,13 @@
 # -*- coding: utf-8 -*-
+"""
+版本说明:
+v0.3: 这个版本可以实现自动采集配对轨迹数据并实现配对数据的本地化保存
+v0.3.1: 新增基于匹配APS帧号的精确数据过滤功能
+      - 在936-1072行进行帧号匹配分析，找到合适的对应关系
+      - 在1075-1088行数据采集时，根据匹配的帧号进行APS和EVS数据保存
+      - 不再使用固定的MAX_PAIRED_DATA_COUNT，而是使用实际匹配的帧号
+      - 支持帧号移位对齐，提高数据匹配精度
+"""
 
 import os
 import sys
@@ -147,7 +156,75 @@ def extract_evs_info(evs_data, frame_number: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         return None
 
-def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_path):
+def extract_aps_frame_numbers_from_alphadata(alphadata_path):
+    """
+    从alphadata文件中提取所有APS帧号
+    
+    :param alphadata_path: alphadata文件路径
+    :return: APS帧号列表
+    """
+    try:
+        print(f"正在读取 {alphadata_path} 中的APS帧号...")
+        
+        # 初始化播放器
+        player = AlpPlayer()
+        ret, model = loadData(player, alphadata_path, 3)  # 使用同步模式（HVS）
+        
+        if not ret:
+            print(f"初始化播放器失败: {alphadata_path}")
+            return []
+        
+        aps_frame_numbers = []
+        frame_count = 0
+        
+        # 启动播放器
+        if not player.load():
+            print(f"加载播放器失败: {alphadata_path}")
+            player.close()
+            return []
+        
+        if not player.play():
+            print(f"开始播放失败: {alphadata_path}")
+            player.close()
+            return []
+        
+        print(f"开始提取APS帧号...")
+        
+        # 遍历所有帧，收集APS帧号
+        while player.isWorking():
+            sync_list = player.getSyncFrames()
+            
+            for it in sync_list:
+                # 获取APS数据信息
+                if len(it) > 0 and it[0] is not None:
+                    frame_count += 1
+                    aps_frame_numbers.append(frame_count)
+                    
+                    # 每处理100帧打印一次进度
+                    if len(aps_frame_numbers) % 100 == 0:
+                        print(f"已找到 {len(aps_frame_numbers)} 个APS帧...")
+                
+                # 获取EVS数据信息
+                if len(it) > 1 and len(it[1]) > 0:
+                    for evs_data in it[1]:
+                        frame_count += 1
+            
+            # 避免过度占用CPU
+            time.sleep(0.001)
+        
+        # 关闭播放器
+        player.close()
+        
+        print(f"在 {alphadata_path} 中找到 {len(aps_frame_numbers)} 个APS帧号")
+        return aps_frame_numbers
+        
+    except Exception as e:
+        print(f"提取APS帧号失败 ({alphadata_path}): {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_path, target_frames=None):
     """
     提取机械臂运动期间的APS和EVS数据及其时间戳
     
@@ -155,6 +232,7 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
     :param output_file_path: 输出txt文件路径
     :param data_file_path: 数据文件路径
     :param sync_timestamps_path: 同步时间戳文件路径
+    :param target_frames: 目标帧号列表，用于筛选特定帧号的数据
     """
     
     # 用于存储第一个配对的APS和EVS数据
@@ -193,6 +271,8 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
     motion_evs_count = 0
     aps_timestamps = []
     evs_timestamps = []
+    all_motion_aps_timestamps = []  # 所有运动期间的APS数据（用于配对分析）
+    all_motion_evs_timestamps = []  # 所有运动期间的EVS数据（用于配对分析）
     all_data = []
     
     # 存储原始数据对象
@@ -285,14 +365,22 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
         # 第二次遍历：分析哪些数据在运动期间
         print("正在分析运动期间的数据...")
         
+        # 注意：现在只使用时间戳过滤，不使用target_frames过滤
+        # target_frames参数只用于配对分析后的数据保存，不用于数据收集
+        print(f"使用时间戳过滤收集运动期间数据，不使用target_frames预过滤")
+        print(f"运动时间戳范围: {motion_start_timestamp} - {motion_end_timestamp} μs")
+        
         for data_info in all_data:
             # 检查时间戳是否在运动期间范围内
             is_in_motion = motion_start_timestamp <= data_info['timestamp_us'] <= motion_end_timestamp
             
+            # 最终判断：只要在运动期间就包含
+            should_include = is_in_motion
+            
             # 计算对应的系统时间戳（用于显示）
             system_time = pre_motion_time_abs + (data_info['timestamp_us'] - first_aps_timestamp) / 1000000.0
             
-            if is_in_motion:
+            if should_include:
                 if data_info['data_type'] == 'APS':
                     motion_aps_count += 1
                     aps_timestamps.append({
@@ -311,14 +399,32 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
                         'data_type': data_info['data_type']
                     })
             
+            # 同时收集所有运动期间的数据（不受target_frames限制）用于配对分析
+            if is_in_motion:
+                if data_info['data_type'] == 'APS':
+                    all_motion_aps_timestamps.append({
+                        'frame_number': data_info['frame_number'],
+                        'timestamp_us': data_info['timestamp_us'],
+                        'system_time': system_time,
+                        'is_in_motion': True
+                    })
+                elif 'EVS' in data_info['data_type']:
+                    all_motion_evs_timestamps.append({
+                        'frame_number': data_info['frame_number'],
+                        'timestamp_us': data_info['timestamp_us'],
+                        'system_time': system_time,
+                        'is_in_motion': True,
+                        'data_type': data_info['data_type']
+                    })
+            
             # 写入文件
             motion_status = "是" if is_in_motion else "否"
             f.write(f"{data_info['frame_number']}\t{data_info['data_type']}\t{data_info['timestamp_us']}\t\t{system_time:.6f}\t{motion_status}\t\t{data_info['size_str']}\n")
             f.flush()
             
             # 打印运动期间的数据
-            if is_in_motion:
-                print(f"发现运动期间{data_info['data_type']}数据 - 帧号: {data_info['frame_number']}, 时间戳: {data_info['timestamp_us']} μs, 系统时间: {system_time:.6f}")
+            if should_include:
+                print(f"发现目标帧号{data_info['data_type']}数据 - 帧号: {data_info['frame_number']}, 时间戳: {data_info['timestamp_us']} μs, 系统时间: {system_time:.6f}")
         
         f.write("-" * 90 + "\n")
         f.write(f"处理完成，总共处理了 {frame_count} 帧数据\n")
@@ -353,14 +459,20 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
         # 收集所有配对数据用于创建筛选后的alpdata文件
         paired_aps_evs_data = []
         
-        for aps_info in aps_timestamps:
+        # 使用所有运动期间的数据进行配对分析（不受target_frames限制）
+        aps_timestamps_for_pairing = all_motion_aps_timestamps if all_motion_aps_timestamps else aps_timestamps
+        evs_timestamps_for_pairing = all_motion_evs_timestamps if all_motion_evs_timestamps else evs_timestamps
+        
+        print(f"配对分析使用 {len(aps_timestamps_for_pairing)} 个APS数据和 {len(evs_timestamps_for_pairing)} 个EVS数据")
+        
+        for aps_info in aps_timestamps_for_pairing:
             aps_timestamp = aps_info['timestamp_us']
             
             # 寻找时间戳差距小于2毫秒的EVS数据，只保存第一个找到的配对
             best_match = None
             min_time_diff = float('inf')
             
-            for evs_info in evs_timestamps:
+            for evs_info in evs_timestamps_for_pairing:
                 evs_timestamp = evs_info['timestamp_us']
                 time_diff = abs(aps_timestamp - evs_timestamp)
                 
@@ -457,8 +569,10 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
                                 cv.imwrite(paired_png_path, paired_image)
                                 print(f"保存配对{paired_count} 拼接图像: {paired_png_path}")
                                 
-                                # 清理多余的配对数据文件，只保留最后MAX_PAIRED_DATA_COUNT个
-                                cleanup_excess_paired_data(paired_data_dir, paired_count)
+                                # 清理多余的配对数据文件，现在保存所有实际配对的帧不再清理
+                                # target_count = len(target_frames) if target_frames is not None else None
+                                # cleanup_excess_paired_data(paired_data_dir, paired_count, target_count)
+                                print(f"保存配对{paired_count} 拼接图像，保留所有实际配对帧")
                                 
                                 # 打印图像信息用于调试
                                 print(f"  APS图像信息 - 形状: {aps_image.shape}, 数据类型: {aps_image.dtype}")
@@ -555,8 +669,16 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
         # 获取输出目录
         output_dir = os.path.dirname(output_file_path)
         
-        # 保存配对数据的APS RAW和EVS txyp数据
-        save_paired_raw_and_evs_data(raw_aps_data, raw_evs_data, aps_timestamps, output_dir, MAX_PAIRED_DATA_COUNT)
+        # 提取实际配对成功的帧号
+        paired_aps_frames = [pair['aps_frame'] for pair in paired_aps_evs_data]
+        paired_evs_frames = [pair['evs_frame'] for pair in paired_aps_evs_data]
+        
+        print(f"使用实际配对成功的帧号保存数据:")
+        print(f"  配对APS帧号: {paired_aps_frames}")
+        print(f"  配对EVS帧号: {paired_evs_frames}")
+        
+        # 保存配对数据的APS RAW和EVS txyp数据（使用target_frames参数）
+        save_paired_raw_and_evs_data(raw_aps_data, raw_evs_data, aps_timestamps, output_dir, target_frames)
 
 def extractDataInfo(player, output_file_path, data_file_path):
     """
@@ -637,17 +759,21 @@ def extractDataInfo(player, output_file_path, data_file_path):
     print(f"数据信息已保存到: {output_file_path}")
     print(f"总共处理了 {frame_count} 帧数据")
 
-def cleanup_excess_paired_data(paired_data_dir, current_paired_count):
+def cleanup_excess_paired_data(paired_data_dir, current_paired_count, target_count=None):
     """
-    清理多余的配对数据文件，只保留最后MAX_PAIRED_DATA_COUNT个
+    清理多余的配对数据文件，只保留最后target_count个
     
     :param paired_data_dir: 配对数据目录
     :param current_paired_count: 当前配对数量
+    :param target_count: 目标保留数量，如果为None则使用MAX_PAIRED_DATA_COUNT
     """
     global MAX_PAIRED_DATA_COUNT
     
-    # 如果当前配对数量小于等于最大保留数量，不需要清理
-    if current_paired_count <= MAX_PAIRED_DATA_COUNT:
+    # 确定要保留的数量
+    keep_count = target_count if target_count is not None else MAX_PAIRED_DATA_COUNT
+    
+    # 如果当前配对数量小于等于保留数量，不需要清理
+    if current_paired_count <= keep_count:
         return
     
     # 获取所有配对数据文件
@@ -662,10 +788,10 @@ def cleanup_excess_paired_data(paired_data_dir, current_paired_count):
     paired_files.sort()
     
     # 计算需要删除的文件数量
-    files_to_delete = len(paired_files) - MAX_PAIRED_DATA_COUNT
+    files_to_delete = len(paired_files) - keep_count
     
     if files_to_delete > 0:
-        print(f"清理配对数据：删除 {files_to_delete} 个旧文件，保留最新的 {MAX_PAIRED_DATA_COUNT} 个")
+        print(f"清理配对数据：删除 {files_to_delete} 个旧文件，保留最新的 {keep_count} 个")
         
         # 删除最旧的文件
         for i in range(files_to_delete):
@@ -866,13 +992,181 @@ def extract_paired_collection_data(paired_data_info):
     os.makedirs(collection_01_analysis_dir, exist_ok=True)
     os.makedirs(collection_02_analysis_dir, exist_ok=True)
     
+    # 在处理数据之前，先提取两个alphadata文件中的APS帧号
+    print("\n=== 提取APS帧号信息 ===")
+    collection_01_aps_frames = extract_aps_frame_numbers_from_alphadata(paired_data_info['collection_01'])
+    collection_02_aps_frames = extract_aps_frame_numbers_from_alphadata(paired_data_info['collection_02'])
+    
+    print(f"\n第一次采集APS帧号统计:")
+    print(f"  总APS帧数: {len(collection_01_aps_frames)}")
+    if collection_01_aps_frames:
+        print(f"  帧号范围: {collection_01_aps_frames[0]} - {collection_01_aps_frames[-1]}")
+        # 计算要显示的倒数帧号数量
+        display_count = MAX_PAIRED_DATA_COUNT + 0
+        if len(collection_01_aps_frames) >= display_count:
+            print(f"  倒数{display_count}个帧号: {collection_01_aps_frames[-display_count:]}")
+        else:
+            print(f"  所有帧号: {collection_01_aps_frames}")
+    
+    print(f"\n第二次采集APS帧号统计:")
+    print(f"  总APS帧数: {len(collection_02_aps_frames)}")
+    if collection_02_aps_frames:
+        print(f"  帧号范围: {collection_02_aps_frames[0]} - {collection_02_aps_frames[-1]}")
+        # 计算要显示的倒数帧号数量
+        display_count = MAX_PAIRED_DATA_COUNT + 0
+        if len(collection_02_aps_frames) >= display_count:
+            print(f"  倒数{display_count}个帧号: {collection_02_aps_frames[-display_count:]}")
+        else:
+            print(f"  所有帧号: {collection_02_aps_frames}")
+    
+    # 比较两次采集的APS帧数
+    frame_count_diff = abs(len(collection_01_aps_frames) - len(collection_02_aps_frames))
+    print(f"\nAPS帧数对比:")
+    print(f"  帧数差异: {frame_count_diff}")
+    if len(collection_01_aps_frames) > 0 and len(collection_02_aps_frames) > 0:
+        frame_count_percent = (frame_count_diff / max(len(collection_01_aps_frames), len(collection_02_aps_frames))) * 100
+        print(f"  相对差异: {frame_count_percent:.2f}%")
+        print(f"  帧数一致性: {'优秀' if frame_count_percent < 1 else '良好' if frame_count_percent < 5 else '需改进'}")
+    
+    # 比较两组帧号的对应关系
+    print("\n=== 帧号对应关系比较 ===")
+    
+    # 获取需要比较的帧号数量
+    compare_count = min(MAX_PAIRED_DATA_COUNT, len(collection_01_aps_frames), len(collection_02_aps_frames))
+    
+    if compare_count == 0:
+        print("没有足够的帧号进行比较")
+    else:
+        # 获取倒数MAX_PAIRED_DATA_COUNT个帧号
+        frames_to_compare_01 = collection_01_aps_frames[-compare_count:]
+        frames_to_compare_02 = collection_02_aps_frames[-compare_count:]
+        
+        print(f"比较倒数 {compare_count} 个帧号的对应关系:")
+        
+        # 检查对应关系
+        all_corresponding = True
+        max_diff = 0
+        diff_sum = 0
+        
+        for i in range(compare_count):
+            diff = abs(frames_to_compare_01[i] - frames_to_compare_02[i])
+            max_diff = max(max_diff, diff)
+            diff_sum += diff
+            
+            if diff >= 40:
+                all_corresponding = False
+                print(f"  第 {i+1} 对: {frames_to_compare_01[i]} vs {frames_to_compare_02[i]} (差异: {diff}) ❌")
+            else:
+                print(f"  第 {i+1} 对: {frames_to_compare_01[i]} vs {frames_to_compare_02[i]} (差异: {diff}) ✓")
+        
+        avg_diff = diff_sum / compare_count if compare_count > 0 else 0
+        
+        print(f"\n对应关系分析:")
+        print(f"  平均差异: {avg_diff:.2f}")
+        print(f"  最大差异: {max_diff}")
+        print(f"  对应状态: {'✓ 一一对应' if all_corresponding else '❌ 存在不对应'}")
+        
+        # 如果不对应，尝试帧号移位比较
+        if not all_corresponding:
+            print(f"\n=== 尝试帧号移位比较 ===")
+            
+            # 确定哪组帧号的最后一个数值较大
+            last_frame_01 = frames_to_compare_01[-1]
+            last_frame_02 = frames_to_compare_02[-1]
+            
+            if last_frame_01 > last_frame_02:
+                print(f"collection_01的最后帧号({last_frame_01})大于collection_02的最后帧号({last_frame_02})")
+                
+                # 获取collection_01的帧号（不移位原始数组）
+                shifted_frames_01 = collection_01_aps_frames[-(compare_count+1):-1]
+                shifted_frames_02 = frames_to_compare_02
+                
+                print(f"collection_01帧号: {shifted_frames_01}")
+                print(f"collection_02帧号: {shifted_frames_02}")
+                
+            else:
+                print(f"collection_02的最后帧号({last_frame_02})大于collection_01的最后帧号({last_frame_01})")
+                
+                # 获取collection_02的倒数11到倒数2的帧号（不移位原始数组）
+                shifted_frames_01 = frames_to_compare_01
+                shifted_frames_02 = collection_02_aps_frames[-(compare_count+1):-1]
+                
+                print(f"collection_01帧号: {shifted_frames_01}")
+                print(f"collection_02帧号: {shifted_frames_02}")
+            
+            # 比较移位后的帧号
+            shifted_compare_count = min(compare_count, len(shifted_frames_01), len(shifted_frames_02))
+            
+            print(f"\n移位后比较倒数 {shifted_compare_count} 个帧号:")
+            
+            shifted_all_corresponding = True
+            shifted_max_diff = 0
+            shifted_diff_sum = 0
+            
+            for i in range(shifted_compare_count):
+                diff = abs(shifted_frames_01[i] - shifted_frames_02[i])
+                shifted_max_diff = max(shifted_max_diff, diff)
+                shifted_diff_sum += diff
+                
+                if diff >= 40:
+                    shifted_all_corresponding = False
+                    print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ❌")
+                else:
+                    print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ✓")
+            
+            shifted_avg_diff = shifted_diff_sum / shifted_compare_count if shifted_compare_count > 0 else 0
+            
+            print(f"\n移位后对应关系分析:")
+            print(f"  平均差异: {shifted_avg_diff:.2f}")
+            print(f"  最大差异: {shifted_max_diff}")
+            print(f"  对应状态: {'✓ 一一对应' if shifted_all_corresponding else '❌ 仍存在不对应'}")
+            
+            # 给出建议
+            if shifted_all_corresponding:
+                print(f"\n✓ 移位后帧号对应关系良好！建议使用移位后的帧号进行数据对齐。")
+            else:
+                print(f"\n❌ 即使移位后帧号对应关系仍不理想，建议检查数据采集过程。")
+    
+    print("\n" + "="*80)
+    
+    # 确定要使用的帧号范围
+    target_frames_01 = None
+    target_frames_02 = None
+    
+    # 根据帧号对应关系分析结果确定目标帧号
+    if 'frames_to_compare_01' in locals() and 'frames_to_compare_02' in locals():
+        if 'shifted_all_corresponding' in locals() and shifted_all_corresponding:
+            # 使用移位后的帧号
+            if 'shifted_frames_01' in locals() and 'shifted_frames_02' in locals():
+                target_frames_01 = shifted_frames_01
+                target_frames_02 = shifted_frames_02
+                print(f"\n使用移位后的帧号进行数据对齐:")
+                print(f"  Collection 01 目标帧号: {target_frames_01}")
+                print(f"  Collection 02 目标帧号: {target_frames_02}")
+        else:
+            # 使用原始对应的帧号
+            target_frames_01 = frames_to_compare_01
+            target_frames_02 = frames_to_compare_02
+            print(f"\n使用原始对应的帧号进行数据对齐:")
+            print(f"  Collection 01 目标帧号: {target_frames_01}")
+            print(f"  Collection 02 目标帧号: {target_frames_02}")
+    
+    # 如果没有找到合适的帧号对应关系，使用默认的倒数MAX_PAIRED_DATA_COUNT个帧号
+    if target_frames_01 is None or target_frames_02 is None:
+        target_frames_01 = collection_01_aps_frames[-MAX_PAIRED_DATA_COUNT:] if len(collection_01_aps_frames) >= MAX_PAIRED_DATA_COUNT else collection_01_aps_frames
+        target_frames_02 = collection_02_aps_frames[-MAX_PAIRED_DATA_COUNT:] if len(collection_02_aps_frames) >= MAX_PAIRED_DATA_COUNT else collection_02_aps_frames
+        print(f"\n使用默认的倒数{MAX_PAIRED_DATA_COUNT}个帧号:")
+        print(f"  Collection 01 目标帧号: {target_frames_01}")
+        print(f"  Collection 02 目标帧号: {target_frames_02}")
+    
     # 处理第一次采集
     print("\n=== 处理第一次采集数据 ===")
     output_01_path = os.path.join(collection_01_analysis_dir, "analysis.txt")
     extractMotionDataForCollection(paired_data_info['collection_01'], 
                                    output_01_path, 
                                    paired_data_info['sync_timestamps'],
-                                   "第一次采集")
+                                   "第一次采集",
+                                   target_frames_01)
     
     # 处理第二次采集
     print("\n=== 处理第二次采集数据 ===")
@@ -880,7 +1174,8 @@ def extract_paired_collection_data(paired_data_info):
     extractMotionDataForCollection(paired_data_info['collection_02'], 
                                    output_02_path, 
                                    paired_data_info['sync_timestamps'],
-                                   "第二次采集")
+                                   "第二次采集",
+                                   target_frames_02)
     
     # 生成对比报告
     generate_comparison_report(output_dir, collection_01_data, collection_02_data)
@@ -927,7 +1222,7 @@ def read_collection_info(collection_info_path):
         print(f"读取采集信息失败: {e}")
         return None
 
-def extractMotionDataForCollection(data_file_path, output_file_path, sync_timestamps_path, collection_name):
+def extractMotionDataForCollection(data_file_path, output_file_path, sync_timestamps_path, collection_name, target_frames=None):
     """
     为单个采集文件提取运动期间的数据
     
@@ -935,6 +1230,7 @@ def extractMotionDataForCollection(data_file_path, output_file_path, sync_timest
     :param output_file_path: 输出文件路径
     :param sync_timestamps_path: 同步时间戳文件路径
     :param collection_name: 采集名称（用于显示）
+    :param target_frames: 目标帧号列表，用于筛选特定帧号的数据
     """
     ## 一. 播放器实例化 ##
     player = AlpPlayer()
@@ -949,7 +1245,7 @@ def extractMotionDataForCollection(data_file_path, output_file_path, sync_timest
     print(f"数据加载成功 ({collection_name})，开始提取运动期间数据...")
     
     ## 三. 创建并启动信息提取线程 ##
-    extract_thread = threading.Thread(target=extractMotionData, args=(player, output_file_path, data_file_path, sync_timestamps_path))
+    extract_thread = threading.Thread(target=extractMotionData, args=(player, output_file_path, data_file_path, sync_timestamps_path, target_frames))
     extract_thread.start()
     
     ## 四. 加载数据 ##
@@ -1083,14 +1379,14 @@ def extract_evs_txyp_from_frame(evs_data):
         print(f"提取EVS txyp数据失败: {e}")
         return []
 
-def save_evs_txyp_intervals(evs_frames_dict, output_dir, aps_timestamps, max_count=10):
+def save_evs_txyp_intervals(evs_frames_dict, output_dir, aps_timestamps, target_frames=None):
     """
-    保存配对数据中指定数量APS时间戳之间的EVS数据为多个txyp格式的npy文件
+    保存配对数据中指定帧号的APS时间戳之间的EVS数据为多个txyp格式的npy文件
     
     :param evs_frames_dict: EVS帧字典 {帧号: EVS数据}
     :param output_dir: 输出目录
     :param aps_timestamps: APS时间戳列表 [{'frame_number': ..., 'timestamp_us': ...}, ...]
-    :param max_count: 最大保存的APS帧数量
+    :param target_frames: 目标帧号列表，如果为None则使用所有APS时间戳
     """
     try:
         # 创建EVS数据输出目录
@@ -1102,10 +1398,15 @@ def save_evs_txyp_intervals(evs_frames_dict, output_dir, aps_timestamps, max_cou
             print("APS时间戳不足，无法分割EVS数据")
             return False
         
-        # 只保留最后max_count个APS时间戳
-        if len(aps_timestamps) > max_count:
-            aps_timestamps = aps_timestamps[-max_count:]
-            print(f"只保留最后{max_count}个APS时间戳的EVS数据")
+        # 如果提供了目标帧号，只保留目标帧号的APS时间戳
+        if target_frames is not None:
+            target_frame_set = set(target_frames)
+            filtered_aps_timestamps = [ts for ts in aps_timestamps if ts['frame_number'] in target_frame_set]
+            print(f"使用目标帧号保存EVS数据，目标帧号数量: {len(target_frame_set)}")
+            print(f"实际匹配的APS时间戳数量: {len(filtered_aps_timestamps)}")
+            aps_timestamps = filtered_aps_timestamps
+        else:
+            print(f"未提供目标帧号，使用所有{len(aps_timestamps)}个APS时间戳的EVS数据")
         
         # 按时间戳排序EVS数据
         sorted_evs_frames = []
@@ -1303,13 +1604,13 @@ def save_evs_txyp_intervals(evs_frames_dict, output_dir, aps_timestamps, max_cou
         print(f"保存EVS txyp间隔数据失败: {e}")
         return False
 
-def save_paired_aps_raw_data(aps_data_dict, output_dir, max_count=10):
+def save_paired_aps_raw_data(aps_data_dict, output_dir, target_frames=None):
     """
-    保存配对数据中指定数量的APS为10bit RAW数据
+    保存配对数据中指定帧号的APS为10bit RAW数据
     
     :param aps_data_dict: APS数据字典 {帧号: APS数据}
     :param output_dir: 输出目录
-    :param max_count: 最大保存数量
+    :param target_frames: 目标帧号列表，如果为None则保存所有数据
     """
     try:
         # 创建APS RAW数据输出目录
@@ -1319,9 +1620,14 @@ def save_paired_aps_raw_data(aps_data_dict, output_dir, max_count=10):
         # 获取所有APS帧号并排序
         aps_frame_numbers = sorted(aps_data_dict.keys())
         
-        # 只保存最后max_count个APS数据
-        if len(aps_frame_numbers) > max_count:
-            aps_frame_numbers = aps_frame_numbers[-max_count:]
+        # 如果提供了目标帧号，只保存目标帧号的数据
+        if target_frames is not None:
+            target_frame_set = set(target_frames)
+            aps_frame_numbers = [frame for frame in aps_frame_numbers if frame in target_frame_set]
+            print(f"使用目标帧号保存APS数据，目标帧号数量: {len(target_frame_set)}")
+            print(f"实际匹配的APS帧号数量: {len(aps_frame_numbers)}")
+        else:
+            print(f"未提供目标帧号，保存所有{len(aps_frame_numbers)}个APS数据")
         
         # 保存APS RAW数据并记录时间戳信息
         saved_count = 0
@@ -1354,7 +1660,10 @@ def save_paired_aps_raw_data(aps_data_dict, output_dir, max_count=10):
             f.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"总APS帧数: {len(aps_data_dict)}\n")
             f.write(f"保存的APS帧数: {saved_count}\n")
-            f.write(f"最大保存数量: {max_count}\n")
+            if target_frames is not None:
+                f.write(f"目标帧号数量: {len(target_frames)}\n")
+            else:
+                f.write(f"保存模式: 全部保存\n")
             
             # 添加分辨率和时间戳信息
             if aps_data_dict:
@@ -1430,7 +1739,396 @@ def save_paired_aps_raw_data(aps_data_dict, output_dir, max_count=10):
         print(f"保存APS RAW数据失败: {e}")
         return False
 
-def save_paired_raw_and_evs_data(raw_aps_data, raw_evs_data, aps_timestamps, output_dir, max_count=10):
+def save_paired_raw_and_evs_data_with_actual_pairs(raw_aps_data, raw_evs_data, aps_timestamps, paired_aps_evs_data, output_dir):
+    """
+    保存实际配对成功的APS RAW和EVS txyp数据
+    
+    :param raw_aps_data: 原始APS数据字典
+    :param raw_evs_data: 原始EVS数据字典
+    :param aps_timestamps: APS时间戳列表
+    :param paired_aps_evs_data: 实际配对成功的APS-EVS数据列表
+    :param output_dir: 输出目录
+    """
+    print("\n=== 开始保存实际配对的RAW和EVS数据 ===")
+    
+    # 提取实际配对成功的帧号
+    paired_aps_frames = [pair['aps_frame'] for pair in paired_aps_evs_data]
+    paired_evs_frames = [pair['evs_frame'] for pair in paired_aps_evs_data]
+    
+    print(f"基于实际配对结果保存数据:")
+    print(f"  实际配对APS帧号: {paired_aps_frames}")
+    print(f"  实际配对EVS帧号: {paired_evs_frames}")
+    print(f"  总配对数量: {len(paired_aps_evs_data)}")
+    
+    # 保存APS RAW数据（只保存实际配对成功的APS帧）
+    print("保存实际配对的APS 10bit RAW数据...")
+    aps_success = save_paired_aps_raw_data_with_actual_pairs(raw_aps_data, output_dir, paired_aps_frames)
+    
+    # 保存EVS txyp数据（基于实际配对的APS时间戳）
+    print("保存实际配对的EVS txyp数据...")
+    evs_success = save_evs_txyp_intervals_with_actual_pairs(raw_evs_data, output_dir, aps_timestamps, paired_aps_evs_data)
+    
+    if aps_success and evs_success:
+        print("实际配对的RAW和EVS数据保存完成！")
+    else:
+        print("实际配对的RAW和EVS数据保存部分失败！")
+
+def save_paired_aps_raw_data_with_actual_pairs(aps_data_dict, output_dir, paired_aps_frames):
+    """
+    保存实际配对的APS为10bit RAW数据
+    
+    :param aps_data_dict: APS数据字典 {帧号: APS数据}
+    :param output_dir: 输出目录
+    :param paired_aps_frames: 实际配对成功的APS帧号列表
+    """
+    try:
+        # 创建APS RAW数据输出目录
+        aps_output_dir = os.path.join(output_dir, "aps_10bit_raw")
+        os.makedirs(aps_output_dir, exist_ok=True)
+        
+        # 只保存实际配对成功的APS帧
+        aps_frame_numbers = [frame for frame in paired_aps_frames if frame in aps_data_dict]
+        
+        print(f"保存实际配对的APS数据，配对帧号数量: {len(paired_aps_frames)}")
+        print(f"实际可保存的APS帧数: {len(aps_frame_numbers)}")
+        
+        # 保存APS RAW数据并记录时间戳信息
+        saved_count = 0
+        saved_aps_info = []  # 保存每个RAW文件的详细信息
+        
+        for frame_number in aps_frame_numbers:
+            aps_data = aps_data_dict[frame_number]
+            output_path = os.path.join(aps_output_dir, f"aps_frame_{frame_number:03d}.raw")
+            
+            if save_aps_as_10bit_raw(aps_data, output_path):
+                saved_count += 1
+                
+                # 获取时间戳信息
+                timestamp_us = extract_timestamp_from_data(aps_data)
+                timestamp_sec = timestamp_us / 1000000.0 if timestamp_us is not None else None
+                
+                saved_aps_info.append({
+                    'frame_number': frame_number,
+                    'filename': f"aps_frame_{frame_number:03d}.raw",
+                    'timestamp_us': timestamp_us,
+                    'timestamp_sec': timestamp_sec
+                })
+                
+                print(f"保存配对APS RAW数据: 帧{frame_number}, 时间戳: {timestamp_us} μs")
+        
+        # 保存APS数据元数据
+        metadata_path = os.path.join(aps_output_dir, "metadata.txt")
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            f.write("=== 实际配对的APS 10bit RAW数据提取结果 ===\n")
+            f.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"总APS帧数: {len(aps_data_dict)}\n")
+            f.write(f"实际配对APS帧数: {saved_count}\n")
+            f.write(f"配对成功率: {saved_count/len(paired_aps_frames)*100:.1f}% ({saved_count}/{len(paired_aps_frames)})\n")
+            
+            # 添加分辨率和时间戳信息
+            if aps_data_dict:
+                first_frame_number = sorted(aps_data_dict.keys())[0]
+                first_aps_data = aps_data_dict[first_frame_number]
+                
+                # 获取分辨率信息
+                try:
+                    aps_image = first_aps_data.convertTo()
+                    if hasattr(aps_image, 'shape'):
+                        height, width = aps_image.shape[:2]
+                        f.write(f"APS分辨率: {width}x{height}\n")
+                    else:
+                        f.write("APS分辨率: N/A\n")
+                except Exception as e:
+                    f.write("APS分辨率: N/A\n")
+                
+                # 获取时间戳信息
+                try:
+                    timestamp_us = extract_timestamp_from_data(first_aps_data)
+                    if timestamp_us is not None:
+                        f.write(f"第一帧时间戳: {timestamp_us} μs\n")
+                        f.write(f"第一帧时间戳(秒): {timestamp_us/1000000:.6f} 秒\n")
+                    else:
+                        f.write("第一帧时间戳: N/A\n")
+                except Exception as e:
+                    f.write("第一帧时间戳: N/A\n")
+                
+                # 获取时间戳范围
+                try:
+                    timestamps = []
+                    for frame_number, aps_data in aps_data_dict.items():
+                        ts = extract_timestamp_from_data(aps_data)
+                        if ts is not None:
+                            timestamps.append(ts)
+                    
+                    if timestamps:
+                        min_ts = min(timestamps)
+                        max_ts = max(timestamps)
+                        f.write(f"时间戳范围: {min_ts}-{max_ts} μs\n")
+                        f.write(f"时间戳范围(秒): {min_ts/1000000:.6f}-{max_ts/1000000:.6f} 秒\n")
+                        f.write(f"采集持续时间: {(max_ts-min_ts)/1000000:.6f} 秒\n")
+                    else:
+                        f.write("时间戳范围: N/A\n")
+                except Exception as e:
+                    f.write("时间戳范围: N/A\n")
+            
+            f.write("数据格式: 10bit RAW二进制文件\n")
+            f.write("文件命名规则: aps_frame_XXX.raw (XXX=帧号)\n")
+            f.write("数据类型: uint16 (低10位有效)\n")
+            f.write("保存模式: 仅保存实际配对成功的帧\n")
+            
+            # 添加所有保存的RAW文件时间戳详细信息
+            if saved_aps_info:
+                f.write("\n=== 保存的配对RAW文件详细时间戳信息 ===\n")
+                f.write("帧号\t文件名\t\t\t时间戳(μs)\t\t时间戳(秒)\n")
+                f.write("-" * 70 + "\n")
+                
+                for aps_info in saved_aps_info:
+                    frame_num = aps_info['frame_number']
+                    filename = aps_info['filename']
+                    timestamp_us = aps_info['timestamp_us']
+                    timestamp_sec = aps_info['timestamp_sec']
+                    
+                    if timestamp_us is not None:
+                        f.write(f"{frame_num:03d}\t{filename}\t\t{timestamp_us}\t\t{timestamp_sec:.6f}\n")
+                    else:
+                        f.write(f"{frame_num:03d}\t{filename}\t\tN/A\t\tN/A\n")
+        
+        print(f"实际配对的APS 10bit RAW数据已保存到: {aps_output_dir}")
+        return True
+        
+    except Exception as e:
+        print(f"保存实际配对的APS RAW数据失败: {e}")
+        return False
+
+def save_evs_txyp_intervals_with_actual_pairs(evs_frames_dict, output_dir, aps_timestamps, paired_aps_evs_data):
+    """
+    保存实际配对数据中APS时间戳之间的EVS数据为多个txyp格式的npy文件
+    
+    :param evs_frames_dict: EVS帧字典 {帧号: EVS数据}
+    :param output_dir: 输出目录
+    :param aps_timestamps: APS时间戳列表 [{'frame_number': ..., 'timestamp_us': ...}, ...]
+    :param paired_aps_evs_data: 实际配对成功的APS-EVS数据列表
+    """
+    try:
+        # 创建EVS数据输出目录
+        evs_output_dir = os.path.join(output_dir, "evs_txyp_data")
+        os.makedirs(evs_output_dir, exist_ok=True)
+        
+        # 提取实际配对成功的APS帧号和时间戳
+        paired_aps_frames = set(pair['aps_frame'] for pair in paired_aps_evs_data)
+        
+        # 只保留实际配对成功的APS时间戳
+        paired_aps_timestamps = [ts for ts in aps_timestamps if ts['frame_number'] in paired_aps_frames]
+        paired_aps_timestamps.sort(key=lambda x: x['timestamp_us'])  # 按时间戳排序
+        
+        print(f"使用实际配对的APS时间戳保存EVS数据:")
+        print(f"  实际配对APS帧数: {len(paired_aps_timestamps)}")
+        print(f"  配对APS帧号: {[ts['frame_number'] for ts in paired_aps_timestamps]}")
+        
+        # 如果配对的APS时间戳少于2个，无法分割
+        if len(paired_aps_timestamps) < 2:
+            print("配对的APS时间戳不足，无法分割EVS数据")
+            return False
+        
+        # 按时间戳排序EVS数据
+        sorted_evs_frames = []
+        for frame_number, evs_data in evs_frames_dict.items():
+            txyp_data = extract_evs_txyp_from_frame(evs_data)
+            if txyp_data:
+                sorted_evs_frames.extend(txyp_data)
+        
+        # 按时间戳排序EVS事件
+        sorted_evs_frames.sort(key=lambda x: x[0])
+        
+        # 获取时间范围（只处理配对数据的时间范围）
+        start_timestamp = paired_aps_timestamps[0]['timestamp_us']
+        end_timestamp = paired_aps_timestamps[-1]['timestamp_us']
+        
+        # 筛选时间范围内的EVS事件
+        paired_range_events = []
+        for event in sorted_evs_frames:
+            if start_timestamp <= event[0] <= end_timestamp:
+                paired_range_events.append(event)
+            elif event[0] > end_timestamp:
+                break
+        
+        print(f"配对数据时间范围: {start_timestamp}-{end_timestamp} μs")
+        print(f"该时间范围内EVS事件数: {len(paired_range_events)}")
+        
+        # 分割EVS数据并保存，记录时间戳段信息
+        saved_evs_intervals = []  # 保存每个EVS文件的时间戳段信息
+        
+        for i in range(len(paired_aps_timestamps) - 1):
+            # 获取当前APS帧和下一APS帧的时间戳
+            current_aps = paired_aps_timestamps[i]
+            next_aps = paired_aps_timestamps[i + 1]
+            
+            interval_start = current_aps['timestamp_us']
+            interval_end = next_aps['timestamp_us']
+            
+            # 筛选时间范围内的EVS事件
+            interval_events = []
+            for event in paired_range_events:
+                if interval_start <= event[0] <= interval_end:
+                    interval_events.append(event)
+                elif event[0] > interval_end:
+                    break
+            
+            # 保存为npy文件
+            if interval_events:
+                interval_array = np.array(interval_events, dtype=np.int64)
+                output_path = os.path.join(evs_output_dir, f"evs_{current_aps['frame_number']:03d}_{next_aps['frame_number']:03d}.npy")
+                np.save(output_path, interval_array)
+                
+                # 记录时间戳段信息
+                saved_evs_intervals.append({
+                    'filename': f"evs_{current_aps['frame_number']:03d}_{next_aps['frame_number']:03d}.npy",
+                    'start_frame': current_aps['frame_number'],
+                    'end_frame': next_aps['frame_number'],
+                    'start_timestamp_us': interval_start,
+                    'end_timestamp_us': interval_end,
+                    'start_timestamp_sec': interval_start / 1000000.0,
+                    'end_timestamp_sec': interval_end / 1000000.0,
+                    'event_count': len(interval_events),
+                    'duration_sec': (interval_end - interval_start) / 1000000.0
+                })
+                
+                print(f"保存配对EVS间隔数据: {current_aps['frame_number']}-{next_aps['frame_number']}, 事件数: {len(interval_events)}, 时间范围: {interval_start}-{interval_end} μs")
+            else:
+                print(f"警告: 配对APS帧{current_aps['frame_number']}-{next_aps['frame_number']}之间没有EVS事件")
+        
+        # 保存EVS数据元数据
+        metadata_path = os.path.join(evs_output_dir, "metadata.txt")
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            f.write("=== 实际配对的EVS txyp数据提取结果 ===\n")
+            f.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"总APS帧数: {len(aps_timestamps)}\n")
+            f.write(f"实际配对APS帧数: {len(paired_aps_timestamps)}\n")
+            f.write(f"EVS间隔文件数: {len(paired_aps_timestamps) - 1}\n")
+            f.write(f"配对数据时间范围: {start_timestamp}-{end_timestamp} μs\n")
+            f.write(f"时间范围内EVS事件数: {len(paired_range_events)}\n")
+            f.write(f"保存模式: 仅保存实际配对成功的APS间隔数据\n")
+            
+            # 添加EVS分辨率和时间戳信息
+            if evs_frames_dict:
+                first_frame_number = sorted(evs_frames_dict.keys())[0]
+                first_evs_data = evs_frames_dict[first_frame_number]
+                
+                # 获取EVS分辨率信息
+                try:
+                    # 尝试多种方法获取EVS传感器尺寸
+                    evs_width = None
+                    evs_height = None
+                    
+                    if hasattr(first_evs_data, 'getWidth') and hasattr(first_evs_data, 'getHeight'):
+                        try:
+                            evs_width = first_evs_data.getWidth()
+                            evs_height = first_evs_data.getHeight()
+                            if callable(evs_width):
+                                evs_width = evs_width()
+                            if callable(evs_height):
+                                evs_height = evs_height()
+                        except:
+                            pass
+                    
+                    if evs_width is None or evs_height is None:
+                        if hasattr(first_evs_data, 'width') and hasattr(first_evs_data, 'height'):
+                            try:
+                                evs_width = first_evs_data.width
+                                evs_height = first_evs_data.height
+                                if callable(evs_width):
+                                    evs_width = evs_width()
+                                if callable(evs_height):
+                                    evs_height = evs_height()
+                            except:
+                                pass
+                    
+                    if evs_width is None or evs_height is None:
+                        # 尝试从渲染帧获取尺寸
+                        try:
+                            evs_image = first_evs_data.frame()
+                            if hasattr(evs_image, 'shape'):
+                                height, width = evs_image.shape[:2]
+                                evs_width = width
+                                evs_height = height
+                        except:
+                            pass
+                    
+                    if evs_width is not None and evs_height is not None:
+                        f.write(f"EVS传感器分辨率: {evs_width}x{evs_height}\n")
+                    else:
+                        f.write("EVS传感器分辨率: N/A\n")
+                        
+                except Exception as e:
+                    f.write("EVS传感器分辨率: N/A\n")
+                
+                # 获取EVS时间戳信息
+                try:
+                    timestamp_us = extract_timestamp_from_data(first_evs_data)
+                    if timestamp_us is not None:
+                        f.write(f"第一帧时间戳: {timestamp_us} μs\n")
+                        f.write(f"第一帧时间戳(秒): {timestamp_us/1000000:.6f} 秒\n")
+                    else:
+                        f.write("第一帧时间戳: N/A\n")
+                except Exception as e:
+                    f.write("第一帧时间戳: N/A\n")
+                
+                # 获取EVS时间戳范围
+                try:
+                    timestamps = []
+                    for frame_number, evs_data in evs_frames_dict.items():
+                        ts = extract_timestamp_from_data(evs_data)
+                        if ts is not None:
+                            timestamps.append(ts)
+                    
+                    if timestamps:
+                        min_ts = min(timestamps)
+                        max_ts = max(timestamps)
+                        f.write(f"EVS时间戳范围: {min_ts}-{max_ts} μs\n")
+                        f.write(f"EVS时间戳范围(秒): {min_ts/1000000:.6f}-{max_ts/1000000:.6f} 秒\n")
+                        f.write(f"EVS采集持续时间: {(max_ts-min_ts)/1000000:.6f} 秒\n")
+                        
+                        # 计算EVS事件频率
+                        if len(paired_range_events) > 0 and (max_ts - min_ts) > 0:
+                            event_rate = len(paired_range_events) / ((max_ts - min_ts) / 1000000.0)
+                            f.write(f"EVS事件频率: {event_rate:.2f} 事件/秒\n")
+                    else:
+                        f.write("EVS时间戳范围: N/A\n")
+                except Exception as e:
+                    f.write("EVS时间戳范围: N/A\n")
+            
+            f.write("数据格式: NumPy数组 (.npy)\n")
+            f.write("数据结构: [时间戳(μs), x坐标, y坐标, 极性(1=正事件,0=负事件)]\n")
+            f.write("文件命名规则: evs_XXX_YYY.npy (XXX=起始APS帧号, YYY=结束APS帧号)\n")
+            f.write("保存模式: 仅保存实际配对成功的APS间隔数据\n")
+            
+            # 添加所有保存的EVS文件时间戳段详细信息
+            if saved_evs_intervals:
+                f.write("\n=== 保存的配对EVS文件详细时间戳段信息 ===\n")
+                f.write("起始帧\t结束帧\t文件名\t\t\t\t时间戳范围(μs)\t\t时间戳范围(秒)\t\t事件数\t持续时间(秒)\n")
+                f.write("-" * 110 + "\n")
+                
+                for evs_interval in saved_evs_intervals:
+                    start_frame = evs_interval['start_frame']
+                    end_frame = evs_interval['end_frame']
+                    filename = evs_interval['filename']
+                    start_ts = evs_interval['start_timestamp_us']
+                    end_ts = evs_interval['end_timestamp_us']
+                    start_sec = evs_interval['start_timestamp_sec']
+                    end_sec = evs_interval['end_timestamp_sec']
+                    event_count = evs_interval['event_count']
+                    duration = evs_interval['duration_sec']
+                    
+                    f.write(f"{start_frame:03d}\t{end_frame:03d}\t{filename}\t\t{start_ts}-{end_ts}\t\t{start_sec:.6f}-{end_sec:.6f}\t{event_count}\t{duration:.6f}\n")
+        
+        print(f"实际配对的EVS txyp数据已保存到: {evs_output_dir}")
+        return True
+        
+    except Exception as e:
+        print(f"保存实际配对的EVS txyp间隔数据失败: {e}")
+        return False
+
+def save_paired_raw_and_evs_data(raw_aps_data, raw_evs_data, aps_timestamps, output_dir, target_frames=None):
     """
     保存配对数据的APS RAW和EVS txyp数据
     
@@ -1438,17 +2136,17 @@ def save_paired_raw_and_evs_data(raw_aps_data, raw_evs_data, aps_timestamps, out
     :param raw_evs_data: 原始EVS数据字典
     :param aps_timestamps: APS时间戳列表
     :param output_dir: 输出目录
-    :param max_count: 最大保存数量
+    :param target_frames: 目标帧号列表，用于筛选特定帧号的数据
     """
     print("\n=== 开始保存配对RAW和EVS数据 ===")
     
     # 保存APS RAW数据
     print("保存APS 10bit RAW数据...")
-    aps_success = save_paired_aps_raw_data(raw_aps_data, output_dir, max_count)
+    aps_success = save_paired_aps_raw_data(raw_aps_data, output_dir, target_frames)
     
     # 保存EVS txyp数据
     print("保存EVS txyp数据...")
-    evs_success = save_evs_txyp_intervals(raw_evs_data, output_dir, aps_timestamps, max_count)
+    evs_success = save_evs_txyp_intervals(raw_evs_data, output_dir, aps_timestamps, target_frames)
     
     if aps_success and evs_success:
         print("配对RAW和EVS数据保存完成！")
@@ -1522,7 +2220,7 @@ def main():
         print("数据加载成功，开始提取运动期间数据...")
         
         ## 三. 创建并启动信息提取线程 ##
-        extract_thread = threading.Thread(target=extractMotionData, args=(player, output_txt_path, data_file_path, sync_timestamps_path))
+        extract_thread = threading.Thread(target=extractMotionData, args=(player, output_txt_path, data_file_path, sync_timestamps_path, None))
         extract_thread.start()
         
         ## 四. 加载数据 ##
