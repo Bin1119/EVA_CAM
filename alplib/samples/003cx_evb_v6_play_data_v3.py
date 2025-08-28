@@ -498,96 +498,97 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
                 # 调试信息：打印配对详情
                 print(f"配对: APS帧{aps_info['frame_number']}({aps_timestamp}) <-> EVS帧{evs_info['frame_number']}({evs_info['timestamp_us']}), 差值: {time_diff}μs")
                 
-                # 保存所有配对的APS和EVS数据为PNG文件
-                try:
-                    # 获取输出目录和创建配对数据文件夹
-                    output_dir = os.path.dirname(output_file_path)
-                    paired_data_dir = os.path.join(output_dir, "paired_data")
-                    
-                    # 创建配对数据文件夹（如果不存在）
-                    if not os.path.exists(paired_data_dir):
-                        os.makedirs(paired_data_dir)
-                        print(f"创建配对数据文件夹: {paired_data_dir}")
-                    
-                    # 拼接并保存APS和EVS配对图像
-                    if aps_info['frame_number'] in raw_aps_data and evs_info['frame_number'] in raw_evs_data:
-                        aps_data = raw_aps_data[aps_info['frame_number']]
-                        evs_data = raw_evs_data[evs_info['frame_number']]
+                # 只保存属于target_frames的配对APS和EVS数据为PNG文件
+                if target_frames is not None and aps_info['frame_number'] in target_frames:
+                    try:
+                        # 获取输出目录和创建配对数据文件夹
+                        output_dir = os.path.dirname(output_file_path)
+                        paired_data_dir = os.path.join(output_dir, "paired_data")
                         
-                        try:
-                            # 获取APS图像
-                            aps_image = aps_data.convertTo()
+                        # 创建配对数据文件夹（如果不存在）
+                        if not os.path.exists(paired_data_dir):
+                            os.makedirs(paired_data_dir)
+                            print(f"创建配对数据文件夹: {paired_data_dir}")
+                        
+                        # 拼接并保存APS和EVS配对图像
+                        if aps_info['frame_number'] in raw_aps_data and evs_info['frame_number'] in raw_evs_data:
+                            aps_data = raw_aps_data[aps_info['frame_number']]
+                            evs_data = raw_evs_data[evs_info['frame_number']]
                             
-                            # 获取EVS图像
-                            evs_image = evs_data.frame()
-                            
-                            if evs_image is not None and hasattr(evs_image, 'shape'):
-                                # 处理EVS图像
-                                evs_display_image = evs_image * 100
+                            try:
+                                # 获取APS图像
+                                aps_image = aps_data.convertTo()
                                 
-                                # 确保图像数据在正确范围内
-                                if evs_display_image.dtype != np.uint8:
-                                    if evs_display_image.max() > 0:
-                                        evs_display_image = (evs_display_image / evs_display_image.max() * 255).astype(np.uint8)
-                                    else:
-                                        evs_display_image = evs_display_image.astype(np.uint8)
+                                # 获取EVS图像
+                                evs_image = evs_data.frame()
                                 
-                                # 如果是单通道图像，转换为3通道BGR格式
-                                if len(evs_display_image.shape) == 2:
-                                    evs_display_image = cv.cvtColor(evs_display_image, cv.COLOR_GRAY2BGR)
-                                
-                                # 确保APS图像也是3通道BGR格式
-                                if len(aps_image.shape) == 2:
-                                    aps_image = cv.cvtColor(aps_image, cv.COLOR_GRAY2BGR)
-                                
-                                # 调整图像大小以便拼接（统一到较小的尺寸）
-                                h1, w1 = aps_image.shape[:2]
-                                h2, w2 = evs_display_image.shape[:2]
-                                
-                                # 计算统一高度（取较小值）
-                                target_height = min(h1, h2)
-                                
-                                # 调整APS图像大小
-                                aps_resized = cv.resize(aps_image, (int(w1 * target_height / h1), target_height))
-                                
-                                # 调整EVS图像大小
-                                evs_resized = cv.resize(evs_display_image, (int(w2 * target_height / h2), target_height))
-                                
-                                # 水平拼接图像
-                                paired_image = cv.hconcat([aps_resized, evs_resized])
-                                
-                                # 添加标签
-                                cv.putText(paired_image, f"APS Frame {aps_info['frame_number']}", (10, 30), 
-                                         cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                                cv.putText(paired_image, f"EVS Frame {evs_info['frame_number']}", (aps_resized.shape[1] + 10, 30), 
-                                         cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                                cv.putText(paired_image, f"Time Diff: {time_diff}us", (aps_resized.shape[1] + 10, 60), 
-                                         cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                                
-                                # 保存拼接后的图像
-                                paired_png_path = os.path.join(paired_data_dir, f"pair_{paired_count:03d}_aps{aps_info['frame_number']}_evs{evs_info['frame_number']}.png")
-                                cv.imwrite(paired_png_path, paired_image)
-                                print(f"保存配对{paired_count} 拼接图像: {paired_png_path}")
-                                
-                                # 清理多余的配对数据文件，现在保存所有实际配对的帧不再清理
-                                # target_count = len(target_frames) if target_frames is not None else None
-                                # cleanup_excess_paired_data(paired_data_dir, paired_count, target_count)
-                                print(f"保存配对{paired_count} 拼接图像，保留所有实际配对帧")
-                                
-                                # 打印图像信息用于调试
-                                print(f"  APS图像信息 - 形状: {aps_image.shape}, 数据类型: {aps_image.dtype}")
-                                print(f"  EVS图像信息 - 形状: {evs_display_image.shape}, 数据类型: {evs_display_image.dtype}, 值范围: {evs_display_image.min()}-{evs_display_image.max()}")
-                                print(f"  拼接图像信息 - 形状: {paired_image.shape}")
-                            else:
-                                print(f"警告: EVS帧{evs_info['frame_number']}的frame()方法返回无效数据")
-                                
-                        except Exception as e:
-                            print(f"保存配对{paired_count} 拼接图像失败: {e}")
-                            import traceback
-                            traceback.print_exc()
-                    
-                except Exception as e:
-                    print(f"保存配对{paired_count}图像失败: {e}")
+                                if evs_image is not None and hasattr(evs_image, 'shape'):
+                                    # 处理EVS图像
+                                    evs_display_image = evs_image * 100
+                                    
+                                    # 确保图像数据在正确范围内
+                                    if evs_display_image.dtype != np.uint8:
+                                        if evs_display_image.max() > 0:
+                                            evs_display_image = (evs_display_image / evs_display_image.max() * 255).astype(np.uint8)
+                                        else:
+                                            evs_display_image = evs_display_image.astype(np.uint8)
+                                    
+                                    # 如果是单通道图像，转换为3通道BGR格式
+                                    if len(evs_display_image.shape) == 2:
+                                        evs_display_image = cv.cvtColor(evs_display_image, cv.COLOR_GRAY2BGR)
+                                    
+                                    # 确保APS图像也是3通道BGR格式
+                                    if len(aps_image.shape) == 2:
+                                        aps_image = cv.cvtColor(aps_image, cv.COLOR_GRAY2BGR)
+                                    
+                                    # 调整图像大小以便拼接（统一到较小的尺寸）
+                                    h1, w1 = aps_image.shape[:2]
+                                    h2, w2 = evs_display_image.shape[:2]
+                                    
+                                    # 计算统一高度（取较小值）
+                                    target_height = min(h1, h2)
+                                    
+                                    # 调整APS图像大小
+                                    aps_resized = cv.resize(aps_image, (int(w1 * target_height / h1), target_height))
+                                    
+                                    # 调整EVS图像大小
+                                    evs_resized = cv.resize(evs_display_image, (int(w2 * target_height / h2), target_height))
+                                    
+                                    # 水平拼接图像
+                                    paired_image = cv.hconcat([aps_resized, evs_resized])
+                                    
+                                    # 添加标签
+                                    cv.putText(paired_image, f"APS Frame {aps_info['frame_number']}", (10, 30), 
+                                            cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                                    cv.putText(paired_image, f"EVS Frame {evs_info['frame_number']}", (aps_resized.shape[1] + 10, 30), 
+                                            cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                                    cv.putText(paired_image, f"Time Diff: {time_diff}us", (aps_resized.shape[1] + 10, 60), 
+                                            cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                    
+                                    # 保存拼接后的图像
+                                    paired_png_path = os.path.join(paired_data_dir, f"pair_{paired_count:03d}_aps{aps_info['frame_number']}_evs{evs_info['frame_number']}.png")
+                                    cv.imwrite(paired_png_path, paired_image)
+                                    print(f"保存配对{paired_count} 拼接图像: {paired_png_path}")
+                                    
+                                    # 清理多余的配对数据文件，现在保存所有实际配对的帧不再清理
+                                    # target_count = len(target_frames) if target_frames is not None else None
+                                    # cleanup_excess_paired_data(paired_data_dir, paired_count, target_count)
+                                    print(f"保存配对{paired_count} 拼接图像，保留所有实际配对帧")
+                                    
+                                    # 打印图像信息用于调试
+                                    print(f"  APS图像信息 - 形状: {aps_image.shape}, 数据类型: {aps_image.dtype}")
+                                    print(f"  EVS图像信息 - 形状: {evs_display_image.shape}, 数据类型: {evs_display_image.dtype}, 值范围: {evs_display_image.min()}-{evs_display_image.max()}")
+                                    print(f"  拼接图像信息 - 形状: {paired_image.shape}")
+                                else:
+                                    print(f"警告: EVS帧{evs_info['frame_number']}的frame()方法返回无效数据")
+                                    
+                            except Exception as e:
+                                print(f"保存配对{paired_count} 拼接图像失败: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                    except Exception as e:
+                        print(f"保存配对{paired_count}图像失败: {e}")
         
         f.write("-" * 80 + "\n")
         f.write(f"找到 {paired_count} 对时间戳差距小于2毫秒的APS-EVS配对数据\n")
