@@ -423,8 +423,8 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
             f.flush()
             
             # 打印运动期间的数据
-            if should_include:
-                print(f"发现目标帧号{data_info['data_type']}数据 - 帧号: {data_info['frame_number']}, 时间戳: {data_info['timestamp_us']} μs, 系统时间: {system_time:.6f}")
+            # if should_include:
+            #     print(f"发现目标帧号{data_info['data_type']}数据 - 帧号: {data_info['frame_number']}, 时间戳: {data_info['timestamp_us']} μs, 系统时间: {system_time:.6f}")
         
         f.write("-" * 90 + "\n")
         f.write(f"处理完成，总共处理了 {frame_count} 帧数据\n")
@@ -1067,7 +1067,7 @@ def extract_paired_collection_data(paired_data_info):
         print(f"  最大差异: {max_diff}")
         print(f"  对应状态: {'✓ 一一对应' if all_corresponding else '❌ 存在不对应'}")
         
-        # 如果不对应，尝试帧号移位比较
+        # 如果不对应，尝试帧号移位比较（最多移位3次）
         if not all_corresponding:
             print(f"\n=== 尝试帧号移位比较 ===")
             
@@ -1075,58 +1075,113 @@ def extract_paired_collection_data(paired_data_info):
             last_frame_01 = frames_to_compare_01[-1]
             last_frame_02 = frames_to_compare_02[-1]
             
-            if last_frame_01 > last_frame_02:
-                print(f"collection_01的最后帧号({last_frame_01})大于collection_02的最后帧号({last_frame_02})")
-                
-                # 获取collection_01的帧号（不移位原始数组）
-                shifted_frames_01 = collection_01_aps_frames[-(compare_count+1):-1]
-                shifted_frames_02 = frames_to_compare_02
-                
-                print(f"collection_01帧号: {shifted_frames_01}")
-                print(f"collection_02帧号: {shifted_frames_02}")
-                
-            else:
-                print(f"collection_02的最后帧号({last_frame_02})大于collection_01的最后帧号({last_frame_01})")
-                
-                # 获取collection_02的倒数11到倒数2的帧号（不移位原始数组）
-                shifted_frames_01 = frames_to_compare_01
-                shifted_frames_02 = collection_02_aps_frames[-(compare_count+1):-1]
-                
-                print(f"collection_01帧号: {shifted_frames_01}")
-                print(f"collection_02帧号: {shifted_frames_02}")
+            # 尝试不同的移位次数
+            shift_found = False
+            best_shift_result = None
             
-            # 比较移位后的帧号
-            shifted_compare_count = min(compare_count, len(shifted_frames_01), len(shifted_frames_02))
-            
-            print(f"\n移位后比较倒数 {shifted_compare_count} 个帧号:")
-            
-            shifted_all_corresponding = True
-            shifted_max_diff = 0
-            shifted_diff_sum = 0
-            
-            for i in range(shifted_compare_count):
-                diff = abs(shifted_frames_01[i] - shifted_frames_02[i])
-                shifted_max_diff = max(shifted_max_diff, diff)
-                shifted_diff_sum += diff
+            for shift_attempt in range(1, 5):  # 尝试移位1-4次
+                print(f"\n--- 尝试第 {shift_attempt} 次移位 ---")
                 
-                if diff >= 40:
-                    shifted_all_corresponding = False
-                    print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ❌")
+                if last_frame_01 > last_frame_02:
+                    print(f"collection_01的最后帧号({last_frame_01})大于collection_02的最后帧号({last_frame_02})")
+                    
+                    # 获取collection_01的帧号（根据移位次数调整）
+                    start_idx = -(compare_count + shift_attempt)
+                    end_idx = -shift_attempt
+                    shifted_frames_01 = collection_01_aps_frames[start_idx:end_idx]
+                    shifted_frames_02 = frames_to_compare_02
+                    
+                    print(f"collection_01帧号 (移位{shift_attempt}次): {shifted_frames_01}")
+                    print(f"collection_02帧号: {shifted_frames_02}")
+                    
                 else:
-                    print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ✓")
+                    print(f"collection_02的最后帧号({last_frame_02})大于collection_01的最后帧号({last_frame_01})")
+                    
+                    # 获取collection_02的帧号（根据移位次数调整）
+                    start_idx = -(compare_count + shift_attempt)
+                    end_idx = -shift_attempt
+                    shifted_frames_01 = frames_to_compare_01
+                    shifted_frames_02 = collection_02_aps_frames[start_idx:end_idx]
+                    
+                    print(f"collection_01帧号: {shifted_frames_01}")
+                    print(f"collection_02帧号 (移位{shift_attempt}次): {shifted_frames_02}")
+                
+                # 检查移位后的数组长度
+                if len(shifted_frames_01) < MAX_PAIRED_DATA_COUNT or len(shifted_frames_02) < MAX_PAIRED_DATA_COUNT:
+                    print(f"移位{shift_attempt}次后数组长度不足，跳过此次尝试")
+                    continue
+                
+                # 比较移位后的帧号
+                shifted_compare_count = min(MAX_PAIRED_DATA_COUNT, len(shifted_frames_01), len(shifted_frames_02))
+                
+                print(f"\n移位{shift_attempt}次后比较倒数 {shifted_compare_count} 个帧号:")
+                
+                shifted_all_corresponding = True
+                shifted_max_diff = 0
+                shifted_diff_sum = 0
+                invalid_pairs = 0
+                
+                for i in range(shifted_compare_count):
+                    diff = abs(shifted_frames_01[i] - shifted_frames_02[i])
+                    shifted_max_diff = max(shifted_max_diff, diff)
+                    shifted_diff_sum += diff
+                    
+                    if diff >= 40:
+                        shifted_all_corresponding = False
+                        invalid_pairs += 1
+                        print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ❌")
+                    else:
+                        print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ✓")
+                
+                shifted_avg_diff = shifted_diff_sum / shifted_compare_count if shifted_compare_count > 0 else 0
+                
+                print(f"\n移位{shift_attempt}次后对应关系分析:")
+                print(f"  平均差异: {shifted_avg_diff:.2f}")
+                print(f"  最大差异: {shifted_max_diff}")
+                print(f"  无效配对数: {invalid_pairs}/{shifted_compare_count}")
+                print(f"  对应状态: {'✓ 一一对应' if shifted_all_corresponding else '❌ 仍存在不对应'}")
+                
+                # 如果找到了有效的对应关系，记录结果
+                if shifted_all_corresponding:
+                    shift_found = True
+                    best_shift_result = {
+                        'shift_count': shift_attempt,
+                        'frames_01': shifted_frames_01,
+                        'frames_02': shifted_frames_02,
+                        'avg_diff': shifted_avg_diff,
+                        'max_diff': shifted_max_diff,
+                        'compare_count': shifted_compare_count
+                    }
+                    break
+                else:
+                    # 即使不是完全对应，也记录最佳结果
+                    if best_shift_result is None or invalid_pairs < best_shift_result.get('invalid_pairs', float('inf')):
+                        best_shift_result = {
+                            'shift_count': shift_attempt,
+                            'frames_01': shifted_frames_01,
+                            'frames_02': shifted_frames_02,
+                            'avg_diff': shifted_avg_diff,
+                            'max_diff': shifted_max_diff,
+                            'compare_count': shifted_compare_count,
+                            'invalid_pairs': invalid_pairs
+                        }
             
-            shifted_avg_diff = shifted_diff_sum / shifted_compare_count if shifted_compare_count > 0 else 0
-            
-            print(f"\n移位后对应关系分析:")
-            print(f"  平均差异: {shifted_avg_diff:.2f}")
-            print(f"  最大差异: {shifted_max_diff}")
-            print(f"  对应状态: {'✓ 一一对应' if shifted_all_corresponding else '❌ 仍存在不对应'}")
-            
-            # 给出建议
-            if shifted_all_corresponding:
-                print(f"\n✓ 移位后帧号对应关系良好！建议使用移位后的帧号进行数据对齐。")
+            # 输出最终结果
+            if shift_found:
+                print(f"\n✓ 移位{best_shift_result['shift_count']}次后帧号对应关系良好！建议使用移位后的帧号进行数据对齐。")
+                print(f"建议使用的帧号:")
+                print(f"  collection_01: {best_shift_result['frames_01']}")
+                print(f"  collection_02: {best_shift_result['frames_02']}")
             else:
-                print(f"\n❌ 即使移位后帧号对应关系仍不理想，建议检查数据采集过程。")
+                if best_shift_result:
+                    print(f"\n⚠️ 经过3次移位尝试，仍未找到完美的对应关系")
+                    print(f"最佳结果是移位{best_shift_result['shift_count']}次，仍有{best_shift_result['invalid_pairs']}对数据差异≥40")
+                    print(f"建议使用的帧号（相对最佳）:")
+                    print(f"  collection_01: {best_shift_result['frames_01']}")
+                    print(f"  collection_02: {best_shift_result['frames_02']}")
+                else:
+                    print(f"\n❌ 经过3次移位尝试，都无法找到有效的对应关系")
+                    print(f"这组数据采集的不好，建议重新采集数据")
     
     print("\n" + "="*80)
     
