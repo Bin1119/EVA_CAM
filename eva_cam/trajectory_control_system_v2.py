@@ -312,8 +312,15 @@ class TrajectoryControlSystem:
             logger.info(f"开始执行运动: {motion_name}")
             result = motion_func(**motion_params)
             
-            # 记录运动结束时间
-            motion_end_time = time.time()
+            # 如果是基于时长的运动，等待预设时长
+            if hasattr(self, 'motion_duration') and self.motion_duration is not None:
+                elapsed_time = time.time() - motion_start_time
+                if elapsed_time < self.motion_duration:
+                    time.sleep(self.motion_duration - elapsed_time)
+                motion_end_time = motion_start_time + self.motion_duration
+            else:
+                # 记录运动结束时间
+                motion_end_time = time.time()
             
             # 更新当前位置
             start_position = self.current_position.copy() if self.current_position else None
@@ -737,6 +744,8 @@ class TrajectoryControlSystem:
                 # 显示帧（基于AlpLib示例代码）
                 if frameslists and device.evsModeIndex() > -1:
                     for frame in frameslists:
+                        
+                        # print(f"evs sensitivity: {device.evsSensitivity()}")
                         # 转换为OpenCV格式（基于AlpLib示例：evs_image * 100）
                         evs_image = frame.frame() * 100
                         
@@ -1547,28 +1556,50 @@ class TrajectoryControlSystem:
             motion_name
         )
     
-    def _execute_timed_motion_with_data_collection(self, motion_func: Callable, motion_params: Dict[str, Any]):
+    def _execute_timed_motion_with_data_collection(self, motion_func: Callable, motion_params: Dict[str, Any], motion_name: str = "", collection_number: int = 1):
         """执行基于时长的运动并同步进行数据采集"""
         try:
+            # 记录预运动时间
+            pre_motion_time = time.time()
+            
             # 启动数据采集
-            if not self._start_motion_data_collection():
+            if not self._start_motion_data_collection(collection_number):
                 logger.error("数据采集启动失败")
                 return False
+            
+            # 记录运动开始时间
+            motion_start_time = time.time()
             
             # 执行运动
             result = motion_func(**motion_params)
             
-            # 等待预设的时长
-            start_time = time.time()
-            elapsed_time = time.time() - start_time
+            # 等待预设的时长 - 确保总时间精确匹配理论时间
+            elapsed_time = time.time() - motion_start_time
             if elapsed_time < self.motion_duration:
-                time.sleep(self.motion_duration - elapsed_time)
+                remaining_time = self.motion_duration - elapsed_time
+                logger.info(f"运动执行时间: {elapsed_time:.3f}秒，等待剩余时间: {remaining_time:.3f}秒")
+                time.sleep(remaining_time)
+            else:
+                logger.warning(f"运动执行时间 {elapsed_time:.3f}秒 超过理论时间 {self.motion_duration:.3f}秒")
+            
+            # 计算运动结束时间
+            motion_end_time = motion_start_time + self.motion_duration
             
             # 更新当前位置
+            start_position = self.current_position.copy() if self.current_position else None
             self._update_current_position()
+            end_position = self.current_position.copy() if self.current_position else None
             
             # 停止数据采集
+            total_collection_start = pre_motion_time
             self._stop_motion_data_collection()
+            total_collection_end = time.time()
+            
+            # 生成时间戳同步信息
+            self._save_timestamp_sync_info(
+                motion_name, pre_motion_time, motion_start_time, motion_end_time,
+                total_collection_start, total_collection_end, start_position, end_position, collection_number
+            )
             
             logger.info(f"基于时长的运动完成，持续时间: {self.motion_duration:.2f}秒")
             
@@ -1653,8 +1684,8 @@ class TrajectoryControlSystem:
             logger.error(f"重复运动失败: {e}")
             return False
     
-    def _move_yz_random_direction_with_collection(self, duration_ms: int = 500, collection_number: int = 1) -> bool:
-        """在YZ平面上朝着随机方向移动指定时长（支持配对采集）"""
+    def _move_yz_random_direction_with_collection(self, collection_number: int = 1) -> bool:
+        """在YZ平面上朝着随机方向移动指定距离（支持配对采集）"""
         if not self.current_position:
             logger.error("当前位置未知，无法执行运动")
             return False
@@ -1667,8 +1698,8 @@ class TrajectoryControlSystem:
             y_direction = math.cos(angle)
             z_direction = math.sin(angle)
             
-            # 计算运动距离 (速度 * 时间)
-            distance_mm = self.timed_linear_speed * (duration_ms / 1000.0)
+            # 使用配置的默认距离
+            distance_mm = self.default_distance
             
             # 计算目标位置 - 从当前位置开始
             target_x = self.current_position[0]
@@ -1678,18 +1709,18 @@ class TrajectoryControlSystem:
             # 保存运动信息用于重复 - 保存的是方向向量和距离，确保两次运动完全一致
             self.last_motion_direction = (y_direction, z_direction)
             self.last_motion_distance = distance_mm
-            self.last_motion_duration = duration_ms
+            self.last_motion_speed = self.linear_speed
             
             # 保存起始和结束位置的绝对坐标，确保重复时到达相同位置
             self.last_motion_start_pos = self.current_position.copy()
             self.last_motion_end_pos = [target_x, target_y, target_z]
             
-            motion_name = f"YZ平面随机方向运动{duration_ms}毫秒"
+            motion_name = f"YZ平面随机方向运动{distance_mm}毫米"
             
-            # 执行运动并采集数据 - 传递采集编号
+            # 使用普通的运动执行，严格按照配置的距离和速度
             return self._execute_motion_with_data_collection(
                 self.controller.move_linear,
-                {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed},
+                {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.linear_speed},
                 motion_name, collection_number
             )
             
@@ -1707,6 +1738,10 @@ class TrajectoryControlSystem:
             logger.error("没有可重复的运动记录")
             return False
         
+        if not hasattr(self, 'last_motion_distance') or not hasattr(self, 'last_motion_speed'):
+            logger.error("缺少运动距离或速度信息")
+            return False
+        
         try:
             # 使用保存的绝对坐标，确保运动到完全相同的目标位置
             target_x = self.last_motion_end_pos[0]
@@ -1715,10 +1750,10 @@ class TrajectoryControlSystem:
             
             motion_name = f"重复YZ平面运动（目标位置：x{target_x:.1f}, y{target_y:.1f}, z{target_z:.1f}）"
             
-            # 执行运动并采集数据 - 传递采集编号
+            # 使用普通的运动执行，严格按照第一次的距离和速度
             return self._execute_motion_with_data_collection(
                 self.controller.move_linear,
-                {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.timed_linear_speed},
+                {'x': target_x, 'y': target_y, 'z': target_z, 'speed': self.last_motion_speed},
                 motion_name, collection_number
             )
             
@@ -1849,7 +1884,7 @@ class TrajectoryControlSystem:
             motion_start_time = time.time()
             
             # 执行随机运动 - 传递采集编号
-            result = self._move_yz_random_direction_with_collection(500, 1)
+            result = self._move_yz_random_direction_with_collection(1)
             
             # 记录结束时间
             motion_end_time = time.time()
@@ -1858,8 +1893,8 @@ class TrajectoryControlSystem:
                 logger.error("第一次运动失败")
                 return False
             
-            # 保存采集信息
-            start_pos = self.initial_position.copy() if self.initial_position else [0, 0, 0]
+            # 保存采集信息 - 使用实际的起始和结束位置
+            start_pos = self.last_motion_start_pos.copy() if hasattr(self, 'last_motion_start_pos') else self.current_position.copy()
             end_pos = self.current_position.copy() if self.current_position else [0, 0, 0]
             
             self._save_collection_info(
@@ -1909,8 +1944,8 @@ class TrajectoryControlSystem:
                 logger.error("第二次运动失败")
                 return False
             
-            # 保存采集信息
-            start_pos = self.initial_position.copy() if self.initial_position else [0, 0, 0]
+            # 保存采集信息 - 使用实际的起始和结束位置
+            start_pos = self.last_motion_start_pos.copy() if hasattr(self, 'last_motion_start_pos') else self.current_position.copy()
             end_pos = self.current_position.copy() if self.current_position else [0, 0, 0]
             
             self._save_collection_info(
