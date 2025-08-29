@@ -551,6 +551,10 @@ def extractMotionData(player, output_file_path, data_file_path, sync_timestamps_
                                     # 调整APS图像大小
                                     aps_resized = cv.resize(aps_image, (int(w1 * target_height / h1), target_height))
                                     
+                                    aps_resized_normalized = aps_resized / 255.0
+                                    gamma_corrected = np.power(aps_resized_normalized, 0.4)
+                                    aps_resized = (gamma_corrected * 255).astype(np.uint8)
+                                    
                                     # 调整EVS图像大小
                                     evs_resized = cv.resize(evs_display_image, (int(w2 * target_height / h2), target_height))
                                     
@@ -1054,7 +1058,7 @@ def extract_paired_collection_data(paired_data_info):
             max_diff = max(max_diff, diff)
             diff_sum += diff
             
-            if diff >= 40:
+            if diff >= 33:
                 all_corresponding = False
                 print(f"  第 {i+1} 对: {frames_to_compare_01[i]} vs {frames_to_compare_02[i]} (差异: {diff}) ❌")
             else:
@@ -1126,7 +1130,7 @@ def extract_paired_collection_data(paired_data_info):
                     shifted_max_diff = max(shifted_max_diff, diff)
                     shifted_diff_sum += diff
                     
-                    if diff >= 40:
+                    if diff >= 33:
                         shifted_all_corresponding = False
                         invalid_pairs += 1
                         print(f"  第 {i+1} 对: {shifted_frames_01[i]} vs {shifted_frames_02[i]} (差异: {diff}) ❌")
@@ -1175,7 +1179,7 @@ def extract_paired_collection_data(paired_data_info):
             else:
                 if best_shift_result:
                     print(f"\n⚠️ 经过3次移位尝试，仍未找到完美的对应关系")
-                    print(f"最佳结果是移位{best_shift_result['shift_count']}次，仍有{best_shift_result['invalid_pairs']}对数据差异≥40")
+                    print(f"最佳结果是移位{best_shift_result['shift_count']}次，仍有{best_shift_result['invalid_pairs']}对数据差异≥33")
                     print(f"建议使用的帧号（相对最佳）:")
                     print(f"  collection_01: {best_shift_result['frames_01']}")
                     print(f"  collection_02: {best_shift_result['frames_02']}")

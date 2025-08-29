@@ -202,14 +202,6 @@ class TrajectoryControlSystem:
             self.is_collecting_data = False
             logger.info("运动数据采集已停止")
             
-            # 更新轨迹信息文件，记录数据采集结束
-            if hasattr(self.controller, 'current_output_dir') and self.controller.current_output_dir:
-                info_file = os.path.join(self.controller.current_output_dir, "trajectory_info.txt")
-                if os.path.exists(info_file):
-                    with open(info_file, 'a', encoding='utf-8') as f:
-                        f.write(f"数据采集结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
-                        f.write("状态: 运动完成\n")
-            
         except Exception as e:
             logger.error(f"停止运动数据采集失败: {e}")
     
@@ -1069,87 +1061,6 @@ class TrajectoryControlSystem:
             logger.error(f"开始数据采集并记录轨迹信息失败: {e}")
             return False
     
-    def _prepare_trajectory_info(self, trajectory: Dict[str, Any]):
-        """准备轨迹信息（在运动前创建文件和记录基本信息）"""
-        try:
-            # 获取保存格式配置
-            recording_config = self.controller.config.get_recording_config()
-            save_format = recording_config.get('format', 'hdf5').lower()
-            
-            # 生成时间戳
-            current_time = datetime.now().strftime('%Y%m%d%H%M%S')
-            milliseconds = datetime.now().microsecond // 1000
-            timestamp = f"{current_time}{milliseconds:03d}"
-            
-            # 设置输出目录
-            output_dir = recording_config.get('output_dir', './data')
-            if recording_config.get('create_timestamp_dirs', True):
-                output_dir = os.path.join(output_dir, timestamp)
-            
-            # 创建输出目录
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # 设置输出目录供后续使用
-            self.controller.current_output_dir = output_dir
-            
-            # 创建轨迹信息文件
-            info_file = os.path.join(output_dir, "trajectory_info.txt")
-            
-            with open(info_file, 'w', encoding='utf-8') as f:
-                f.write("=== 运动轨迹信息 ===\n")
-                f.write(f"轨迹名称: {trajectory['name']}\n")
-                f.write(f"轨迹描述: {trajectory['description']}\n")
-                f.write(f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
-                f.write(f"起始位置: x={self.current_position[0]:.2f}, y={self.current_position[1]:.2f}, z={self.current_position[2]:.2f}\n")
-                
-                # 记录运动参数
-                params = trajectory['params']
-                f.write("\n=== 运动参数 ===\n")
-                for key, value in params.items():
-                    if key == 'distance_mm':
-                        f.write(f"移动距离: {value} 毫米\n")
-                    elif key == 'angle_degrees':
-                        f.write(f"旋转角度: {value} 度\n")
-                    elif key == 'radius_mm':
-                        f.write(f"圆形半径: {value} 毫米\n")
-                    elif key == 'side_mm':
-                        f.write(f"方形边长: {value} 毫米\n")
-                    else:
-                        f.write(f"{key}: {value}\n")
-                
-                # 记录系统配置
-                f.write("\n=== 系统配置 ===\n")
-                f.write(f"默认移动距离: {self.default_distance} 毫米\n")
-                f.write(f"默认旋转角度: {self.default_rotation_angle} 度\n")
-                f.write(f"线性移动速度: {self.linear_speed} mm/s\n")
-                f.write(f"垂直移动速度: {self.vertical_speed} mm/s\n")
-                f.write(f"旋转速度: {self.rotation_speed} °/s\n")
-                
-                # 记录相机配置
-                if hasattr(self.controller, 'camera') and self.controller.camera:
-                    device = self.controller.camera
-                    f.write("\n=== 相机配置 ===\n")
-                    f.write(f"相机模式: {self.controller.config.get('CAMERA', 'mode', fallback='HVS')}\n")
-                    
-                    if device.apsModeIndex() > -1:
-                        f.write(f"APS分辨率: {device.apsWidth()}x{device.apsHeight()}\n")
-                        f.write(f"APS帧率: {device.apsFps()} fps\n")
-                        f.write(f"APS曝光时间: {device.apsExposureTime()} us\n")
-                        f.write(f"APS增益: {device.apsAnalogGain()}\n")
-                    
-                    if device.evsModeIndex() > -1:
-                        f.write(f"EVS分辨率: {device.evsWidth()}x{device.evsHeight()}\n")
-                        f.write(f"EVS帧率: {device.evsFps()} fps\n")
-                        f.write(f"EVS灵敏度: {device.evsSensitivity()}\n")
-                
-                f.write("\n=== 执行状态 ===\n")
-                f.write("状态: 准备执行运动...\n")
-            
-            logger.info(f"轨迹信息已准备好: {info_file}")
-            
-        except Exception as e:
-            logger.error(f"准备轨迹信息失败: {e}")
-    
     def stop_data_collection(self) -> bool:
         """停止数据采集"""
         try:
@@ -1198,10 +1109,6 @@ class TrajectoryControlSystem:
                     print(f"\n✗ {trajectory['name']} 执行失败")
                     return False
             else:
-                # 对于其他选项，使用简单的数据采集机制
-                # 记录轨迹信息到文件（在运动前准备好）
-                self._prepare_trajectory_info(trajectory)
-                
                 # 执行运动并采集数据轨迹
                 result = trajectory['motion_func'](**trajectory['params'])
                 

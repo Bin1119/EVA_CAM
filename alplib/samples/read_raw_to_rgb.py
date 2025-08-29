@@ -417,13 +417,14 @@ def read_10bit_raw_to_8bit_rgb_isp(raw_file_path, width=640, height=480, bayer_p
         traceback.print_exc()
         return None, width, height
 
-def read_10bit_raw_to_8bit_rgb(raw_file_path, width=640, height=480):
+def read_10bit_raw_to_8bit_rgb(raw_file_path, width=640, height=480, gamma=0.5):
     """
     读取10bit RAW文件并转换为8bit RGB图像
     
     :param raw_file_path: RAW文件路径
     :param width: 图像宽度
     :param height: 图像高度
+    :param gamma: 伽马值，小于1用于提亮，大于1用于变暗
     :return: 8bit RGB图像 (numpy数组)
     """
     try:
@@ -495,10 +496,13 @@ def read_10bit_raw_to_8bit_rgb(raw_file_path, width=640, height=480):
         
         # 转换为8bit (右移2位或线性映射)
         # 方法1: 右移2位 (快速但可能损失精度)
-        image_8bit = (raw_10bit >> 2).astype(np.uint8)
+        # image_8bit = (raw_10bit >> 2).astype(np.uint8)
         
-        # 方法2: 线性映射到0-255 (保持更好精度)
-        # image_8bit = ((raw_10bit.astype(np.float32) / 1023.0) * 255).astype(np.uint8)
+        # 方法2: 线性映射到0-255并应用gamma校正进行非线性提亮
+        normalized = (raw_10bit.astype(np.float32) / 1023.0)
+        # 应用gamma校正：gamma < 1 提亮图像，gamma > 1 变暗图像
+        gamma_corrected = np.power(normalized, gamma)
+        image_8bit = (gamma_corrected * 255).astype(np.uint8)
         
         # 转换为RGB (复制到三个通道)
         rgb_image = cv.cvtColor(image_8bit, cv.COLOR_GRAY2RGB)
